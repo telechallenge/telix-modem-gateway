@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  telix:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telix
+    restart: unless-stopped
+    ports:
+      - "2323:2323"
+    volumes:
+      - ./configs/telix.yaml:/etc/telix/telix.yaml:ro
+      - telix-logs:/var/log/telix
+    networks:
+      - telix-net
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2323"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  fail2ban:
+    image: crazymax/fail2ban:latest
+    container_name: telix-fail2ban
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./fail2ban/telix.conf:/etc/fail2ban/filter.d/telix.conf:ro
+      - ./fail2ban/jail.local:/etc/fail2ban/jail.d/telix.local:ro
+      - telix-logs:/var/log/telix:ro
+      - fail2ban-data:/data
+    depends_on:
+      - telix
+
+volumes:
+  telix-logs:
+  fail2ban-data:
+
+networks:
+  telix-net:
+    driver: bridge

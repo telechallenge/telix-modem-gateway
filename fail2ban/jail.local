@@ -1,0 +1,11 @@
+# Fail2ban jail configuration for Telix Modem Gateway
+# Add this to your /etc/fail2ban/jail.local or create as a new file
+
+[telix]
+enabled = true
+port = 2323
+filter = telix
+logpath = /var/log/telix/telix.log
+maxretry = 5
+bantime = 3600
+findtime = 600

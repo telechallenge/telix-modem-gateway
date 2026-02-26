@@ -1,0 +1,35 @@
+server:
+  port: 2323
+  max_connections: 100
+  max_per_ip: 5
+  idle_timeout: 300  # seconds
+
+logging:
+  level: info
+  format: json
+  file: ./log/telix/telix.log
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 8888
+    name: "Enigma Demo"
+    required_settings:
+      init: "ATZ"           # modem must send ATZ before dialing
+      baud: 9600            # modem must AT&N8 (lock to 9600) before dialing
+
+  - number: "415-555-0100"
+    host: "bbs.example.com"
+    port: 23
+    name: "Example BBS"
+
+  - number: "800-555-1234"
+    host: "telehack.com"
+    port: 23
+    name: "Telehack"
+
+rate_limit:
+  enabled: true
+  max_attempts: 5
+  window_seconds: 60
+  block_duration: 300
