@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const maxTrackedIPs = 10000
+
 // RateLimiter implements per-IP rate limiting
 type RateLimiter struct {
 	mu sync.Mutex
@@ -14,9 +16,16 @@ type RateLimiter struct {
 	window        time.Duration
 	blockDuration time.Duration
 
-	attempts map[string][]time.Time
-	blocked  map[string]time.Time
+	attempts     map[string][]time.Time
+	blocked      map[string]time.Time
+	globalCount  int       // total allows in the current window
+	globalWindow time.Time // start of the current global window
+	done         chan struct{}
 }
+
+// globalMaxRate is the maximum total allows per window across all IPs.
+// If exceeded, all new connections are rejected regardless of per-IP limits.
+const globalMaxRate = 1000
 
 // NewRateLimiter creates a new rate limiter
 func NewRateLimiter(enabled bool, maxAttempts int, window, blockDuration time.Duration) *RateLimiter {
@@ -27,12 +36,19 @@ func NewRateLimiter(enabled bool, maxAttempts int, window, blockDuration time.Du
 		blockDuration: blockDuration,
 		attempts:      make(map[string][]time.Time),
 		blocked:       make(map[string]time.Time),
+		globalWindow:  time.Now(),
+		done:          make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
 	go rl.cleanup()
 
 	return rl
+}
+
+// Stop terminates the cleanup goroutine
+func (r *RateLimiter) Stop() {
+	close(r.done)
 }
 
 // Allow checks if an IP is allowed to make a connection attempt
@@ -46,6 +62,15 @@ func (r *RateLimiter) Allow(ip string) bool {
 
 	now := time.Now()
 
+	// Check global rate — reject all if threshold exceeded
+	if now.Sub(r.globalWindow) > r.window {
+		r.globalCount = 0
+		r.globalWindow = now
+	}
+	if r.globalCount >= globalMaxRate {
+		return false
+	}
+
 	// Check if blocked
 	if blockedUntil, ok := r.blocked[ip]; ok {
 		if now.Before(blockedUntil) {
@@ -58,6 +83,13 @@ func (r *RateLimiter) Allow(ip string) bool {
 	// Clean old attempts
 	r.cleanAttemptsLocked(ip, now)
 
+	// Evict oldest entry if map is at capacity
+	if len(r.attempts) >= maxTrackedIPs {
+		if _, exists := r.attempts[ip]; !exists {
+			r.evictOldestLocked()
+		}
+	}
+
 	// Check attempt count
 	if len(r.attempts[ip]) >= r.maxAttempts {
 		// Block the IP
@@ -68,39 +100,31 @@ func (r *RateLimiter) Allow(ip string) bool {
 
 	// Record this attempt atomically
 	r.attempts[ip] = append(r.attempts[ip], now)
+	r.globalCount++
 	return true
 }
 
-// RecordAttempt records a connection attempt from an IP
-func (r *RateLimiter) RecordAttempt(ip string) {
-	if !r.enabled {
-		return
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	now := time.Now()
-	r.cleanAttemptsLocked(ip, now)
-	r.attempts[ip] = append(r.attempts[ip], now)
-}
-
-// IsBlocked checks if an IP is currently blocked
-func (r *RateLimiter) IsBlocked(ip string) bool {
-	if !r.enabled {
-		return false
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if blockedUntil, ok := r.blocked[ip]; ok {
-		if time.Now().Before(blockedUntil) {
-			return true
+// evictOldestLocked removes the entry with the oldest last-attempt time.
+// Must be called with r.mu held.
+func (r *RateLimiter) evictOldestLocked() {
+	var oldestIP string
+	var oldestTime time.Time
+	first := true
+	for ip, attempts := range r.attempts {
+		if len(attempts) == 0 {
+			delete(r.attempts, ip)
+			return
 		}
-		delete(r.blocked, ip)
+		last := attempts[len(attempts)-1]
+		if first || last.Before(oldestTime) {
+			oldestIP = ip
+			oldestTime = last
+			first = false
+		}
 	}
-	return false
+	if oldestIP != "" {
+		delete(r.attempts, oldestIP)
+	}
 }
 
 func (r *RateLimiter) cleanAttemptsLocked(ip string, now time.Time) {
@@ -126,10 +150,16 @@ func (r *RateLimiter) cleanAttemptsLocked(ip string, now time.Time) {
 
 // cleanup periodically removes stale entries
 func (r *RateLimiter) cleanup() {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-ticker.C:
+		}
+
 		r.mu.Lock()
 		now := time.Now()
 
@@ -218,9 +248,3 @@ func (c *ConnectionTracker) Count() int {
 	return c.total
 }
 
-// CountForIP returns the connection count for an IP
-func (c *ConnectionTracker) CountForIP(ip string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.conns[ip]
-}

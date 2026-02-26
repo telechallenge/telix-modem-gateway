@@ -1,21 +1,25 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
 
 	"telix/internal/config"
 	"telix/internal/logging"
+
+	"golang.org/x/time/rate"
 )
 
 // Server is the main telnet server
 type Server struct {
-	config      *config.Config
-	logger      *logging.Logger
-	listener    net.Listener
-	rateLimiter *RateLimiter
-	connTracker *ConnectionTracker
+	config        *config.Config
+	logger        *logging.Logger
+	listener      net.Listener
+	rateLimiter   *RateLimiter
+	connTracker   *ConnectionTracker
+	acceptLimiter *rate.Limiter // throttles TCP accept rate to prevent flood attacks
 
 	mu       sync.Mutex
 	sessions map[net.Conn]*Session
@@ -37,8 +41,9 @@ func New(cfg *config.Config, logger *logging.Logger) *Server {
 			cfg.Server.MaxConnections,
 			cfg.Server.MaxPerIP,
 		),
-		sessions: make(map[net.Conn]*Session),
-		done:     make(chan struct{}),
+		acceptLimiter: rate.NewLimiter(rate.Limit(50), 20), // 50 accepts/sec, burst of 20
+		sessions:      make(map[net.Conn]*Session),
+		done:          make(chan struct{}),
 	}
 }
 
@@ -74,12 +79,20 @@ func (s *Server) Stop() {
 	}
 	s.mu.Unlock()
 
+	s.rateLimiter.Stop()
+
 	s.logger.Info().
 		Str("event", "server_stopped").
 		Msg("")
 }
 
 func (s *Server) acceptLoop() {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-s.done
+		cancel()
+	}()
+
 	for {
 		select {
 		case <-s.done:
@@ -99,6 +112,13 @@ func (s *Server) acceptLoop() {
 					Msg("")
 				continue
 			}
+		}
+
+		// Throttle accept rate to prevent TCP flood attacks from
+		// overwhelming the server with goroutine creation.
+		if err := s.acceptLimiter.Wait(ctx); err != nil {
+			conn.Close()
+			return
 		}
 
 		go s.handleConnection(conn)
@@ -149,9 +169,4 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	s.connTracker.Remove(host)
 	s.logger.Disconnected(host)
-}
-
-// ConnectionCount returns the current connection count
-func (s *Server) ConnectionCount() int {
-	return s.connTracker.Count()
 }

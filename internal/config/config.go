@@ -57,10 +57,6 @@ type RateLimitConfig struct {
 	BlockDuration int  `yaml:"block_duration"` // seconds
 }
 
-func (c *ServerConfig) GetIdleTimeout() time.Duration {
-	return time.Duration(c.IdleTimeout) * time.Second
-}
-
 func (c *RateLimitConfig) GetWindow() time.Duration {
 	return time.Duration(c.WindowSeconds) * time.Second
 }
@@ -106,13 +102,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Apply defaults: error_correction and compression default to true
-	trueVal := true
 	for i := range cfg.Phonebook {
 		if cfg.Phonebook[i].RequiredSettings.ErrorCorrection == nil {
-			cfg.Phonebook[i].RequiredSettings.ErrorCorrection = &trueVal
+			cfg.Phonebook[i].RequiredSettings.ErrorCorrection = boolPtr(true)
 		}
 		if cfg.Phonebook[i].RequiredSettings.Compression == nil {
-			cfg.Phonebook[i].RequiredSettings.Compression = &trueVal
+			cfg.Phonebook[i].RequiredSettings.Compression = boolPtr(true)
 		}
 	}
 
@@ -159,6 +154,10 @@ func (c *Config) LookupNumber(number string) *PhonebookEntry {
 		}
 	}
 	return nil
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 func normalizeNumber(number string) string {

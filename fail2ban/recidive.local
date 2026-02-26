@@ -1,0 +1,9 @@
+# Escalating bans for repeat offenders
+# Monitors fail2ban's own log to detect IPs that get banned repeatedly
+
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+bantime = 604800
+findtime = 86400
+maxretry = 3

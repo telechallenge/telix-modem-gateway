@@ -100,12 +100,10 @@ type Session struct {
 	remoteIP     string
 	clientFilter *dialer.TelnetFilter // filters telnet commands from the client
 
-	remoteConn   net.Conn
-	remoteMu     sync.Mutex
-	inputBuffer  bytes.Buffer
-	escapeBuffer bytes.Buffer
-	lastInput    time.Time
-	lastDial     time.Time
+	remoteConn net.Conn
+	remoteMu   sync.Mutex
+	lastInput  time.Time
+	lastDial   time.Time
 
 	done chan struct{}
 }
@@ -142,22 +140,30 @@ func (s *Session) Run() {
 
 	// Negotiate telnet options with the client.
 	// Tell the client we will handle echo and suppress go-ahead.
-	s.conn.Write([]byte{
+	if _, err := s.writeClient([]byte{
 		dialer.IAC, dialer.WILL, dialer.ECHO,
 		dialer.IAC, dialer.WILL, dialer.SUPPRESS_GO_AHEAD,
 		dialer.IAC, dialer.DO, dialer.SUPPRESS_GO_AHEAD,
-	})
+	}); err != nil {
+		return
+	}
 
 	// Give the client a moment to send its negotiation responses,
 	// then drain them so they don't pollute the command buffer.
+	// Note: telnet filtering is continuous throughout the session via
+	// clientFilter — this drain is just for the initial negotiation burst.
 	time.Sleep(100 * time.Millisecond)
 	s.drainClientTelnet()
 
 	// Send banner
-	s.writeClient([]byte(banner))
+	if _, err := s.writeClient([]byte(banner)); err != nil {
+		return
+	}
 
 	// Send initial OK
-	s.sendResult(modem.ResultOK)
+	if s.sendResult(modem.ResultOK) != nil {
+		return
+	}
 
 	// Main session loop
 	s.commandLoop()
@@ -186,9 +192,10 @@ func (s *Session) hangup() {
 	s.modem.SetState(modem.StateCommand)
 }
 
-func (s *Session) sendResult(code modem.ResultCode) {
+func (s *Session) sendResult(code modem.ResultCode) error {
 	result := s.modem.FormatResultExternal(code)
-	s.writeClient([]byte(result))
+	_, err := s.writeClient([]byte(result))
+	return err
 }
 
 const clientWriteTimeout = 10 * time.Second
@@ -213,7 +220,9 @@ func (s *Session) drainClientTelnet() {
 			// Run through the filter to process any DO/WILL/WONT/DONT
 			_, responses := s.clientFilter.Filter(buf[:n])
 			if len(responses) > 0 {
-				s.conn.Write(responses)
+				if _, err := s.writeClient(responses); err != nil {
+					break
+				}
 			}
 		}
 		if err != nil {
@@ -304,16 +313,12 @@ func (s *Session) readLine(reader *bufio.Reader) (string, error) {
 			return "", err
 		}
 
-		// Echo if enabled
-		if s.modem.Echo() {
-			s.writeClient([]byte{b})
-		}
-
 		// Check for line terminator
 		if b == cr || b == lf {
 			if s.modem.Echo() {
-				// Send CR LF
-				s.writeClient([]byte{cr, lf})
+				if _, err := s.writeClient([]byte{cr, lf}); err != nil {
+					return "", err
+				}
 			}
 			return line.String(), nil
 		}
@@ -321,16 +326,24 @@ func (s *Session) readLine(reader *bufio.Reader) (string, error) {
 		// Handle backspace
 		if b == bs {
 			if line.Len() > 0 {
-				// Remove last character
 				data := line.Bytes()
 				line.Reset()
 				line.Write(data[:len(data)-1])
-				// Send backspace, space, backspace to erase
 				if s.modem.Echo() {
-					s.writeClient([]byte{' ', bs})
+					// Move back, overwrite with space, move back
+					if _, err := s.writeClient([]byte{bs, ' ', bs}); err != nil {
+						return "", err
+					}
 				}
 			}
 			continue
+		}
+
+		// Echo if enabled
+		if s.modem.Echo() {
+			if _, err := s.writeClient([]byte{b}); err != nil {
+				return "", err
+			}
 		}
 
 		// Prevent memory exhaustion from unbounded input
@@ -363,7 +376,9 @@ func (s *Session) processCommand(input string) {
 
 	response, _, _ := s.modem.Execute(cmd)
 	if response != "" {
-		s.writeClient([]byte(response))
+		if _, err := s.writeClient([]byte(response)); err != nil {
+			return
+		}
 	}
 }
 
@@ -610,7 +625,11 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 	escapeChar := s.modem.Registers().GetEscapeChar()
 	guardTime := time.Duration(s.modem.Registers().GetEscapeGuardTime()) * time.Millisecond
 
-	// Escape detection state
+	// Escape detection state.
+	// SECURITY: Escape detection only processes bytes from the client read
+	// path (s.clientFilter.Filter on client input). The remote→client
+	// goroutine below does not touch escape state, so a malicious BBS
+	// cannot inject +++ sequences to force an escape.
 	escapeCount := 0
 	var lastEscapeTime time.Time
 	preEscapePause := false
@@ -640,12 +659,18 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 
 			// Send any telnet responses
 			if len(responses) > 0 {
-				remote.Write(responses)
+				if _, err := remote.Write(responses); err != nil {
+					close(remoteGone)
+					return
+				}
 			}
 
 			// Forward to user
 			if len(filtered) > 0 {
-				s.writeClient(filtered)
+				if _, err := s.writeClient(filtered); err != nil {
+					close(remoteGone)
+					return
+				}
 			}
 		}
 	}()
@@ -715,7 +740,11 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 						lastEscapeTime = now
 					} else {
 						// No pre-pause, send char through
-						remote.Write([]byte{b})
+						if _, err := remote.Write([]byte{b}); err != nil {
+							s.hangup()
+							s.sendResult(modem.ResultNoCarrier)
+							return
+						}
 					}
 				} else {
 					// Subsequent escape chars
@@ -738,12 +767,20 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 
 				// If we had pending escapes, send them through
 				for i := 0; i < escapeCount; i++ {
-					remote.Write([]byte{escapeChar})
+					if _, err := remote.Write([]byte{escapeChar}); err != nil {
+						s.hangup()
+						s.sendResult(modem.ResultNoCarrier)
+						return
+					}
 				}
 				escapeCount = 0
 
 				// Send current character
-				remote.Write([]byte{b})
+				if _, err := remote.Write([]byte{b}); err != nil {
+					s.hangup()
+					s.sendResult(modem.ResultNoCarrier)
+					return
+				}
 			}
 
 			s.lastInput = now

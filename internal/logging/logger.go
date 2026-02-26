@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type Level int
@@ -65,11 +67,13 @@ func New(level, format, file string) (*Logger, error) {
 			return nil, err
 		}
 
-		f, err := os.OpenFile(file, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
-		if err != nil {
-			return nil, err
+		logFile := &lumberjack.Logger{
+			Filename:   file,
+			MaxSize:    50, // megabytes
+			MaxBackups: 3,
+			MaxAge:     28, // days
 		}
-		output = io.MultiWriter(os.Stdout, f)
+		output = io.MultiWriter(os.Stdout, logFile)
 	}
 
 	return &Logger{
@@ -157,30 +161,35 @@ func (e *Event) Msg(msg string) {
 	}
 }
 
+// sanitizeField truncates and strips non-printable characters from a
+// string to prevent log injection and abuse.
+func sanitizeField(s string, maxLen int) string {
+	if len(s) > maxLen {
+		s = s[:maxLen]
+	}
+	sanitized := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 32 && s[i] < 127 {
+			sanitized = append(sanitized, s[i])
+		}
+	}
+	return string(sanitized)
+}
+
 func (l *Logger) ConnectionAttempt(sourceIP, dialedNumber, result string) {
 	l.Info().
 		Str("event", "connection_attempt").
 		Str("source_ip", sourceIP).
-		Str("dialed_number", dialedNumber).
+		Str("dialed_number", sanitizeField(dialedNumber, 100)).
 		Str("result", result).
 		Msg("")
 }
 
 func (l *Logger) InvalidCommand(sourceIP, command string) {
-	// Truncate and strip non-printable characters to prevent log abuse
-	if len(command) > 100 {
-		command = command[:100]
-	}
-	sanitized := make([]byte, 0, len(command))
-	for i := 0; i < len(command); i++ {
-		if command[i] >= 32 && command[i] < 127 {
-			sanitized = append(sanitized, command[i])
-		}
-	}
 	l.Warn().
 		Str("event", "invalid_command").
 		Str("source_ip", sourceIP).
-		Str("command", string(sanitized)).
+		Str("command", sanitizeField(command, 100)).
 		Msg("")
 }
 
@@ -196,7 +205,7 @@ func (l *Logger) InvalidNumber(sourceIP, number string) {
 	l.Warn().
 		Str("event", "invalid_number").
 		Str("source_ip", sourceIP).
-		Str("dialed_number", number).
+		Str("dialed_number", sanitizeField(number, 100)).
 		Msg("")
 }
 
@@ -214,21 +223,12 @@ func (l *Logger) Disconnected(sourceIP string) {
 		Msg("")
 }
 
-func (l *Logger) MissingInit(sourceIP, number, requiredInit string) {
-	l.Warn().
-		Str("event", "missing_init").
-		Str("source_ip", sourceIP).
-		Str("dialed_number", number).
-		Str("required_init", requiredInit).
-		Msg("")
-}
-
 func (l *Logger) MissingSettings(sourceIP, number, setting, detail string) {
 	l.Warn().
 		Str("event", "missing_settings").
 		Str("source_ip", sourceIP).
-		Str("dialed_number", number).
-		Str("setting", setting).
-		Str("detail", detail).
+		Str("dialed_number", sanitizeField(number, 100)).
+		Str("setting", sanitizeField(setting, 50)).
+		Str("detail", sanitizeField(detail, 200)).
 		Msg("")
 }

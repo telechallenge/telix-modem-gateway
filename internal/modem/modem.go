@@ -13,7 +13,6 @@ type State int
 const (
 	StateCommand State = iota
 	StateData
-	StateEscaping
 )
 
 // Modem represents a virtual modem instance
@@ -134,25 +133,11 @@ func (m *Modem) Execute(cmd *Command) (string, ResultCode, bool) {
 		return m.formatResult(ResultOK, cr, lf), ResultOK, false
 
 	case CmdReset:
-		m.registers.Reset()
-		m.echo = true
-		m.verbose = true
-		m.quiet = false
-		m.xlevel = 4
-		m.baud = 0
-		m.errorCorrection = 5
-		m.compression = true
+		m.resetDefaults()
 		return m.formatResult(ResultOK, cr, lf), ResultOK, false
 
 	case CmdFactoryReset:
-		m.registers.Reset()
-		m.echo = true
-		m.verbose = true
-		m.quiet = false
-		m.xlevel = 4
-		m.baud = 0
-		m.errorCorrection = 5
-		m.compression = true
+		m.resetDefaults()
 		m.initSent = make(map[string]bool)
 		m.initSent["AT&F"] = true
 		return m.formatResult(ResultOK, cr, lf), ResultOK, false
@@ -229,6 +214,19 @@ func (m *Modem) Execute(cmd *Command) (string, ResultCode, bool) {
 	default:
 		return m.formatResult(ResultError, cr, lf), ResultError, false
 	}
+}
+
+// resetDefaults restores modem settings to power-on defaults.
+// Must be called with m.mu held.
+func (m *Modem) resetDefaults() {
+	m.registers.Reset()
+	m.echo = true
+	m.verbose = true
+	m.quiet = false
+	m.xlevel = 4
+	m.baud = 0
+	m.errorCorrection = 5
+	m.compression = true
 }
 
 func (m *Modem) formatResult(code ResultCode, cr, lf byte) string {

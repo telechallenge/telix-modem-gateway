@@ -52,14 +52,46 @@ func (s *SRegisters) Get(reg int) int {
 	return 0
 }
 
-// Set sets the value of a register, clamping to the valid range 0-255.
+// registerLimit defines the valid range for a register.
+type registerLimit struct {
+	min, max int
+}
+
+// registerLimits defines per-register valid ranges. Values are silently
+// clamped to these ranges, matching Hayes modem behavior.
+var registerLimits = map[int]registerLimit{
+	0:  {0, 255},  // Auto-answer ring count
+	2:  {0, 127},  // Escape char (valid ASCII; 0 disables escape — Hayes feature)
+	3:  {1, 31},   // CR must be a control char
+	4:  {1, 31},   // LF must be a control char
+	5:  {1, 31},   // BS must be a control char
+	6:  {0, 10},   // Dial tone wait, cap at 10 seconds
+	7:  {1, 60},   // Connection timeout, at least 1s, cap at 60s
+	8:  {0, 10},   // Comma pause time
+	9:  {1, 255},  // Carrier detect time
+	10: {1, 255},  // Carrier loss delay
+	12: {20, 255}, // Guard time, minimum ~400ms to prevent trivial escape
+}
+
+// Set sets the value of a register, clamping to the valid range.
+// Per-register semantic limits are enforced where defined; all other
+// registers are clamped to 0-255.
 func (s *SRegisters) Set(reg, value int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if value < 0 {
-		value = 0
-	} else if value > 255 {
-		value = 255
+
+	if limit, ok := registerLimits[reg]; ok {
+		if value < limit.min {
+			value = limit.min
+		} else if value > limit.max {
+			value = limit.max
+		}
+	} else {
+		if value < 0 {
+			value = 0
+		} else if value > 255 {
+			value = 255
+		}
 	}
 	s.registers[reg] = value
 }
@@ -94,19 +126,9 @@ func (s *SRegisters) GetConnectionTimeout() int {
 	return s.Get(7)
 }
 
-// GetCommaPause returns the comma pause time in seconds (S8)
-func (s *SRegisters) GetCommaPause() int {
-	return s.Get(8)
-}
-
 // GetCarrierDetectTime returns the carrier detect response time in milliseconds (S9)
 func (s *SRegisters) GetCarrierDetectTime() int {
 	return s.Get(9) * 100
-}
-
-// GetCarrierLossDelay returns the carrier loss delay in milliseconds (S10)
-func (s *SRegisters) GetCarrierLossDelay() int {
-	return s.Get(10) * 100
 }
 
 // GetEscapeGuardTime returns the escape guard time in milliseconds

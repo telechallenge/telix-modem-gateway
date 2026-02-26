@@ -20,9 +20,14 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   fail2ban:
-    image: crazymax/fail2ban:latest
+    image: crazymax/fail2ban:1.1.0-r3
     container_name: telix-fail2ban
     restart: unless-stopped
     network_mode: host
@@ -32,10 +37,16 @@ services:
     volumes:
       - ./fail2ban/telix.conf:/etc/fail2ban/filter.d/telix.conf:ro
       - ./fail2ban/jail.local:/etc/fail2ban/jail.d/telix.local:ro
+      - ./fail2ban/recidive.local:/etc/fail2ban/jail.d/recidive.local:ro
       - telix-logs:/var/log/telix:ro
       - fail2ban-data:/data
     depends_on:
       - telix
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
 
 volumes:
   telix-logs:

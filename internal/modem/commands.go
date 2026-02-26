@@ -1,7 +1,6 @@
 package modem
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -199,14 +198,6 @@ func ParseCommand(input string) *Command {
 	return cmd
 }
 
-// FormatResult formats a result code based on verbose mode
-func FormatResult(code ResultCode, verbose bool, cr, lf byte) string {
-	if verbose {
-		return fmt.Sprintf("%c%c%s%c%c", cr, lf, code.String(), cr, lf)
-	}
-	return fmt.Sprintf("%d%c", code, cr)
-}
-
 // ResultCode represents modem result codes
 type ResultCode int
 
@@ -216,8 +207,6 @@ const (
 	ResultRing      ResultCode = 2
 	ResultNoCarrier ResultCode = 3
 	ResultError     ResultCode = 4
-	ResultNoDialtone ResultCode = 6
-	ResultBusy      ResultCode = 7
 	ResultNoAnswer  ResultCode = 8
 )
 
@@ -233,10 +222,6 @@ func (r ResultCode) String() string {
 		return "NO CARRIER"
 	case ResultError:
 		return "ERROR"
-	case ResultNoDialtone:
-		return "NO DIALTONE"
-	case ResultBusy:
-		return "BUSY"
 	case ResultNoAnswer:
 		return "NO ANSWER"
 	default:
