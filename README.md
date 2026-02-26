@@ -2,6 +2,10 @@
 
 A virtual Hayes-compatible modem gateway that sits between telnet clients and BBS systems. Clients connect via telnet and interact with a realistic AT command emulation — dialing phone numbers, hearing rings, negotiating connections — before being bridged to a real TCP host. Think of it as a modem simulator that turns any telnet connection into an authentic 1990s dial-up experience.
 
+## Use Cases
+
+Providing a gateway to provide a "modem" style experience connecting to telnet BBS'.  We also act as a proxy/gateway to hide the remote BBS' IP or even allow BBS to exist in a private network accessible to the gateway, for instance inside kubes.
+
 ## How it works
 
 1. A user connects to the gateway via telnet (default port 2323)
@@ -229,4 +233,9 @@ go test ./...
 
 ## License
 
-See LICENSE file.
+No License is granted. Not for distribution.
+
+## TODO
+- Secure/SSH access
+- Web-based Terminal application
+- ?
