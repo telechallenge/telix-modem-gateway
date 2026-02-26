@@ -408,6 +408,24 @@ func (s *Session) handleDial(number string) {
 		}
 	}
 
+	if rs.ErrorCorrection != nil {
+		wantEC := *rs.ErrorCorrection
+		haveEC := s.modem.GetErrorCorrection() == 5
+		if wantEC != haveEC {
+			s.logger.MissingSettings(s.remoteIP, number, "error_correction", fmt.Sprintf("want %v, have %v", wantEC, haveEC))
+			settingsOK = false
+		}
+	}
+
+	if rs.Compression != nil {
+		wantComp := *rs.Compression
+		haveComp := s.modem.GetCompression()
+		if wantComp != haveComp {
+			s.logger.MissingSettings(s.remoteIP, number, "compression", fmt.Sprintf("want %v, have %v", wantComp, haveComp))
+			settingsOK = false
+		}
+	}
+
 	if !settingsOK {
 		s.sendRings()
 		s.sendGarbageConnect()

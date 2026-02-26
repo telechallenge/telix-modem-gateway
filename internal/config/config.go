@@ -29,8 +29,10 @@ type LoggingConfig struct {
 }
 
 type RequiredSettings struct {
-	Init string `yaml:"init,omitempty"`
-	Baud int    `yaml:"baud,omitempty"`
+	Init            string `yaml:"init,omitempty"`
+	Baud            int    `yaml:"baud,omitempty"`
+	ErrorCorrection *bool  `yaml:"error_correction,omitempty"`
+	Compression     *bool  `yaml:"compression,omitempty"`
 }
 
 // ValidBaudRates is the set of baud rates supported by AT&N.
@@ -100,6 +102,17 @@ func Load(path string) (*Config, error) {
 	for i := range cfg.Phonebook {
 		if cfg.Phonebook[i].RequiredInit != "" && cfg.Phonebook[i].RequiredSettings.Init == "" {
 			cfg.Phonebook[i].RequiredSettings.Init = cfg.Phonebook[i].RequiredInit
+		}
+	}
+
+	// Apply defaults: error_correction and compression default to true
+	trueVal := true
+	for i := range cfg.Phonebook {
+		if cfg.Phonebook[i].RequiredSettings.ErrorCorrection == nil {
+			cfg.Phonebook[i].RequiredSettings.ErrorCorrection = &trueVal
+		}
+		if cfg.Phonebook[i].RequiredSettings.Compression == nil {
+			cfg.Phonebook[i].RequiredSettings.Compression = &trueVal
 		}
 	}
 

@@ -29,7 +29,9 @@ const (
 	CmdSRegisterSet    // ATS<n>=<v>
 	CmdSRegisterQuery  // ATS<n>?
 	CmdSetX            // ATX0-ATX4
-	CmdLockSpeed       // AT&N<n>
+	CmdLockSpeed           // AT&N<n>
+	CmdSetErrorCorrection  // AT&Q0, AT&Q5
+	CmdSetCompression      // AT%C0, AT%C1
 )
 
 // Command represents a parsed AT command
@@ -51,7 +53,9 @@ var (
 	sRegSetPattern   = regexp.MustCompile(`(?i)^ATS(\d+)=(\d+)$`)
 	sRegQueryPattern = regexp.MustCompile(`(?i)^ATS(\d+)\?$`)
 	dialPattern      = regexp.MustCompile(`(?i)^ATD[TP]([0-9\-\(\)\.\*# ]+)$`)
-	lockSpeedPattern = regexp.MustCompile(`(?i)^AT&N(\d+)$`)
+	lockSpeedPattern      = regexp.MustCompile(`(?i)^AT&N(\d+)$`)
+	errorCorrPattern      = regexp.MustCompile(`(?i)^AT&Q(\d)$`)
+	compressionPattern    = regexp.MustCompile(`(?i)^AT%C(\d)$`)
 )
 
 // ParseCommand parses an AT command string
@@ -161,6 +165,34 @@ func ParseCommand(input string) *Command {
 		}
 		cmd.Type = CmdLockSpeed
 		cmd.Value = code
+		return cmd
+	}
+
+	// Check AT&Q error correction
+	if matches := errorCorrPattern.FindStringSubmatch(input); matches != nil {
+		val, err := strconv.Atoi(matches[1])
+		if err != nil {
+			return cmd // CmdUnknown
+		}
+		if val != 0 && val != 5 {
+			return cmd // CmdUnknown — only 0 and 5 are valid
+		}
+		cmd.Type = CmdSetErrorCorrection
+		cmd.Value = val
+		return cmd
+	}
+
+	// Check AT%C compression
+	if matches := compressionPattern.FindStringSubmatch(input); matches != nil {
+		val, err := strconv.Atoi(matches[1])
+		if err != nil {
+			return cmd // CmdUnknown
+		}
+		if val != 0 && val != 1 {
+			return cmd // CmdUnknown — only 0 and 1 are valid
+		}
+		cmd.Type = CmdSetCompression
+		cmd.Value = val
 		return cmd
 	}
 

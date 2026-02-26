@@ -22,11 +22,21 @@ phonebook:
     host: "bbs.example.com"
     port: 23
     name: "Example BBS"
+    # error_correction and compression default to true — matches ATZ defaults
 
   - number: "800-555-1234"
     host: "telehack.com"
     port: 23
     name: "Telehack"
+
+  - number: "202-555-0001"
+    host: "retro.example.com"
+    port: 23
+    name: "Ye Olde BBS"
+    required_settings:
+      baud: 300
+      error_correction: false   # raw connection, no V.42
+      compression: false        # no V.42bis
 
 rate_limit:
   enabled: true

@@ -122,6 +122,8 @@ Both fields are optional. If omitted, the entry connects with no preconditions.
 |-------|-------------|
 | `init` | An AT command string (e.g. `ATZ`, `AT&F`) the user must have sent before dialing. If not sent, the connection produces garbage and drops. |
 | `baud` | A baud rate the modem must be locked to via `AT&N`. If the modem's speed doesn't match, the connection produces garbage and drops. Valid rates: 300, 1200, 2400, 4800, 7200, 9600, 14400, 19200, 38400, 56000. |
+| `error_correction` | Whether V.42/LAPM error correction must be on (`true`) or off (`false`). **Defaults to `true`** if not specified — matching the modem's factory default (`&Q5`). Set to `false` for entries that require a raw connection. |
+| `compression` | Whether V.42bis compression must be on (`true`) or off (`false`). **Defaults to `true`** if not specified — matching the modem's factory default (`%C1`). Set to `false` for entries that require no compression. |
 
 When `baud` is specified, a successful connection reports `CONNECT <baud>` at that speed. When not specified, the modem uses its locked speed (if set) or picks a realistic random speed from a weighted pool.
 
@@ -146,6 +148,8 @@ When `baud` is specified, a successful connection reports `CONNECT <baud>` at th
 | `ATX0`–`ATX4` | Result code level (X0 = basic, X4 = full with dial tone/busy detection) |
 | `ATI` | Identify modem |
 | `AT&V` | View active configuration |
+| `AT&Q0` / `AT&Q5` | Error correction off / on (V.42/LAPM) |
+| `AT%C0` / `AT%C1` | Data compression off / on (V.42bis) |
 
 ### S-registers
 
@@ -190,6 +194,27 @@ The `AT&N` command locks the modem's connection speed, matching the real Hayes e
 
 The locked speed is shown in `AT&V` output and reset to auto by `ATZ` or `AT&F`.
 
+### Error correction and compression (AT&Q, AT%C)
+
+At speeds >= 2400, real modems negotiate V.42 error correction (LAPM) and V.42bis data compression. The modem defaults to error correction on (`&Q5`) and compression on (`%C1`).
+
+| Command | Description |
+|---------|-------------|
+| `AT&Q5` | Enable V.42/LAPM error correction (default) |
+| `AT&Q0` | Disable error correction |
+| `AT%C1` | Enable V.42bis compression (default) |
+| `AT%C0` | Disable compression |
+
+When error correction is active and the connection speed is >= 2400, the CONNECT string includes protocol information:
+
+```
+CONNECT 9600/ARQ/V42/LAPM/V42BIS   (error correction + compression)
+CONNECT 9600/ARQ/V42/LAPM          (error correction only)
+CONNECT 9600                        (no error correction)
+```
+
+These settings are shown in `AT&V` output and reset to defaults by `ATZ` or `AT&F`.
+
 ### Escape sequence
 
 While connected (data mode), send `+++` with a pause before and after (S12 guard time, default 1 second) to return to command mode. Then use `ATH` to hang up or `ATO` to return to data mode.
@@ -207,7 +232,7 @@ ATDT916-555-1212
 RING
 RING
 
-CONNECT 9600
+CONNECT 9600/ARQ/V42/LAPM/V42BIS
 ```
 
 Without the `AT&N8` (when the entry requires baud 9600), the user would see:

@@ -159,6 +159,80 @@ phonebook:
 	}
 }
 
+func TestErrorCorrectionCompressionDefaults(t *testing.T) {
+	yaml := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 23
+    name: "Default BBS"
+  - number: "415-555-0100"
+    host: "example.com"
+    port: 23
+    name: "Raw BBS"
+    required_settings:
+      error_correction: false
+      compression: false
+  - number: "800-555-1234"
+    host: "example.com"
+    port: 23
+    name: "Explicit BBS"
+    required_settings:
+      error_correction: true
+      compression: true
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.WriteString(yaml); err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	cfg, err := Load(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Entry 0: no settings specified → defaults to true
+	ec0 := cfg.Phonebook[0].RequiredSettings.ErrorCorrection
+	comp0 := cfg.Phonebook[0].RequiredSettings.Compression
+	if ec0 == nil || *ec0 != true {
+		t.Errorf("entry 0 ErrorCorrection = %v, want true", ec0)
+	}
+	if comp0 == nil || *comp0 != true {
+		t.Errorf("entry 0 Compression = %v, want true", comp0)
+	}
+
+	// Entry 1: explicitly false
+	ec1 := cfg.Phonebook[1].RequiredSettings.ErrorCorrection
+	comp1 := cfg.Phonebook[1].RequiredSettings.Compression
+	if ec1 == nil || *ec1 != false {
+		t.Errorf("entry 1 ErrorCorrection = %v, want false", ec1)
+	}
+	if comp1 == nil || *comp1 != false {
+		t.Errorf("entry 1 Compression = %v, want false", comp1)
+	}
+
+	// Entry 2: explicitly true
+	ec2 := cfg.Phonebook[2].RequiredSettings.ErrorCorrection
+	comp2 := cfg.Phonebook[2].RequiredSettings.Compression
+	if ec2 == nil || *ec2 != true {
+		t.Errorf("entry 2 ErrorCorrection = %v, want true", ec2)
+	}
+	if comp2 == nil || *comp2 != true {
+		t.Errorf("entry 2 Compression = %v, want true", comp2)
+	}
+}
+
 func TestLookupNumber(t *testing.T) {
 	cfg := &Config{
 		Phonebook: []PhonebookEntry{

@@ -20,26 +20,30 @@ const (
 type Modem struct {
 	mu sync.Mutex
 
-	state     State
-	echo      bool
-	verbose   bool
-	quiet     bool
-	xlevel    int // X command level (0-4), controls result code detail
-	baud      int // Locked baud rate (0 = auto/56000)
-	registers *SRegisters
-	initSent  map[string]bool // Track which init commands have been sent
+	state           State
+	echo            bool
+	verbose         bool
+	quiet           bool
+	xlevel          int  // X command level (0-4), controls result code detail
+	baud            int  // Locked baud rate (0 = auto/56000)
+	errorCorrection int  // 0 = off, 5 = V.42/LAPM
+	compression     bool // V.42bis
+	registers       *SRegisters
+	initSent        map[string]bool // Track which init commands have been sent
 }
 
 // New creates a new modem instance
 func New() *Modem {
 	m := &Modem{
-		state:     StateCommand,
-		echo:      true,
-		verbose:   true,
-		quiet:     false,
-		xlevel:    4,
-		registers: NewSRegisters(),
-		initSent:  make(map[string]bool),
+		state:           StateCommand,
+		echo:            true,
+		verbose:         true,
+		quiet:           false,
+		xlevel:          4,
+		errorCorrection: 5,
+		compression:     true,
+		registers:       NewSRegisters(),
+		initSent:        make(map[string]bool),
 	}
 	return m
 }
@@ -91,6 +95,20 @@ func (m *Modem) GetBaud() int {
 	return m.baud
 }
 
+// GetErrorCorrection returns the error correction mode. 0 = off, 5 = V.42/LAPM.
+func (m *Modem) GetErrorCorrection() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.errorCorrection
+}
+
+// GetCompression returns whether V.42bis compression is enabled.
+func (m *Modem) GetCompression() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.compression
+}
+
 // HasSentInit checks if an init command was sent
 func (m *Modem) HasSentInit(cmd string) bool {
 	m.mu.Lock()
@@ -122,6 +140,8 @@ func (m *Modem) Execute(cmd *Command) (string, ResultCode, bool) {
 		m.quiet = false
 		m.xlevel = 4
 		m.baud = 0
+		m.errorCorrection = 5
+		m.compression = true
 		return m.formatResult(ResultOK, cr, lf), ResultOK, false
 
 	case CmdFactoryReset:
@@ -131,6 +151,8 @@ func (m *Modem) Execute(cmd *Command) (string, ResultCode, bool) {
 		m.quiet = false
 		m.xlevel = 4
 		m.baud = 0
+		m.errorCorrection = 5
+		m.compression = true
 		m.initSent = make(map[string]bool)
 		m.initSent["AT&F"] = true
 		return m.formatResult(ResultOK, cr, lf), ResultOK, false
@@ -192,6 +214,14 @@ func (m *Modem) Execute(cmd *Command) (string, ResultCode, bool) {
 		m.baud = SpeedCodeMap[cmd.Value]
 		return m.formatResult(ResultOK, cr, lf), ResultOK, false
 
+	case CmdSetErrorCorrection:
+		m.errorCorrection = cmd.Value
+		return m.formatResult(ResultOK, cr, lf), ResultOK, false
+
+	case CmdSetCompression:
+		m.compression = cmd.Value == 1
+		return m.formatResult(ResultOK, cr, lf), ResultOK, false
+
 	case CmdDial:
 		// Return a flag indicating we should dial
 		return "", ResultOK, true
@@ -230,7 +260,14 @@ func (m *Modem) FormatConnectResult(speed int) string {
 	}
 	if m.verbose {
 		if m.xlevel >= 1 {
-			return fmt.Sprintf("%c%cCONNECT %d%c%c", cr, lf, speed, cr, lf)
+			suffix := ""
+			if speed >= 2400 && m.errorCorrection == 5 {
+				suffix = "/ARQ/V42/LAPM"
+				if m.compression {
+					suffix += "/V42BIS"
+				}
+			}
+			return fmt.Sprintf("%c%cCONNECT %d%s%c%c", cr, lf, speed, suffix, cr, lf)
 		}
 		return fmt.Sprintf("%c%cCONNECT%c%c", cr, lf, cr, lf)
 	}
@@ -245,12 +282,14 @@ func (m *Modem) viewConfig(cr, lf byte) string {
 	if m.baud > 0 {
 		baudStr = fmt.Sprintf("%d", m.baud)
 	}
-	sb.WriteString(fmt.Sprintf("E%d V%d Q%d X%d &N=%s%c%c",
+	sb.WriteString(fmt.Sprintf("E%d V%d Q%d X%d &N=%s &Q%d %%C%d%c%c",
 		boolToInt(m.echo),
 		boolToInt(m.verbose),
 		boolToInt(m.quiet),
 		m.xlevel,
 		baudStr,
+		m.errorCorrection,
+		boolToInt(m.compression),
 		cr, lf))
 
 	sb.WriteString(fmt.Sprintf("%c%cS-REGISTERS:%c%c", cr, lf, cr, lf))
