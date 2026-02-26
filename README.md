@@ -1,6 +1,6 @@
 # Telix Modem Gateway
 
-A virtual Hayes-compatible modem gateway that sits between telnet clients and BBS systems. Clients connect via telnet and interact with a realistic AT command emulation — dialing phone numbers, hearing rings, negotiating connections — before being bridged to a real TCP host. Think of it as a modem simulator that turns any telnet connection into an authentic 1990s dial-up experience.
+A virtual Hayes-compatible modem gateway that sits between telnet clients and BBS systems. Clients connect via telnet and interact with a realistic AT command simulation — dialing phone numbers, hearing rings, negotiating connections — before being bridged to a real TCP host. Think of it as a modem simulator that turns any telnet connection into an authentic 1990s dial-up experience.
 
 ## Use Cases
 
