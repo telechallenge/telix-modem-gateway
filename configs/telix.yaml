@@ -38,6 +38,16 @@ phonebook:
       error_correction: false   # raw connection, no V.42
       compression: false        # no V.42bis
 
+dialer:
+  # Restrict outbound connections to these networks.
+  # If set, phonebook hosts must resolve to IPs within these CIDRs.
+  # Leave empty to allow all destinations (not recommended in production).
+  allowed_networks:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "127.0.0.0/8"
+
 rate_limit:
   enabled: true
   max_attempts: 5

@@ -134,7 +134,7 @@ func NewSession(conn net.Conn, cfg *config.Config, logger *logging.Logger) *Sess
 		modem:        modem.New(cfg.Version),
 		config:       cfg,
 		logger:       logger.WithSession(sessionID, host),
-		dialer:       dialer.New(timeout),
+		dialer:       dialer.New(timeout, cfg.Dialer.ParsedNetworks()),
 		remoteIP:     host,
 		clientFilter: dialer.NewTelnetFilter(),
 		banner:       buildBanner(cfg.Version),
@@ -454,7 +454,7 @@ func (s *Session) handleDial(number string) {
 
 	// Attempt connection while ringing
 	timeout := time.Duration(s.modem.Registers().GetConnectionTimeout()) * time.Second
-	d := dialer.New(timeout)
+	d := dialer.New(timeout, s.config.Dialer.ParsedNetworks())
 
 	s.logger.ConnectionAttempt(number, "attempting")
 

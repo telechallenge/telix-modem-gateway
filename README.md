@@ -82,6 +82,21 @@ logging:
   file: ./log/telix.log   # Optional log file (also logs to stdout)
 ```
 
+### Dialer (network restrictions)
+
+```yaml
+dialer:
+  allowed_networks:    # Restrict outbound dials to these CIDRs
+    - "10.0.0.0/8"     # Private network where BBS hosts live
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "127.0.0.0/8"    # Loopback
+```
+
+When `allowed_networks` is set, the gateway resolves phonebook hostnames and verifies all IPs fall within the allowed CIDRs before connecting. This prevents the gateway from being used to reach arbitrary hosts on the public internet. **Recommended for production deployments** where BBS hosts live on a private network.
+
+If `allowed_networks` is empty or omitted, all destinations are allowed.
+
 ### Rate limiting
 
 ```yaml
