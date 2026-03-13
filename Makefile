@@ -3,9 +3,10 @@ CMD       := ./cmd/telix
 CONFIG    := configs/telix.yaml
 GO        := go
 GOFLAGS   := -trimpath
-LDFLAGS   := -s -w
+VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS   := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build clean test vet fmt run docker docker-up docker-down
+.PHONY: all build clean test vet fmt run docker docker-up docker-down web-install web-dev
 
 all: build
 
@@ -35,3 +36,9 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+web-install:
+	cd web && npm install
+
+web-dev:
+	cd web && npm run dev

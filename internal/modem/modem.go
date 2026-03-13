@@ -23,16 +23,17 @@ type Modem struct {
 	echo            bool
 	verbose         bool
 	quiet           bool
-	xlevel          int  // X command level (0-4), controls result code detail
-	baud            int  // Locked baud rate (0 = auto/56000)
-	errorCorrection int  // 0 = off, 5 = V.42/LAPM
-	compression     bool // V.42bis
+	xlevel          int    // X command level (0-4), controls result code detail
+	baud            int    // Locked baud rate (0 = auto/56000)
+	errorCorrection int    // 0 = off, 5 = V.42/LAPM
+	compression     bool   // V.42bis
+	version         string // Reported in ATI response
 	registers       *SRegisters
 	initSent        map[string]bool // Track which init commands have been sent
 }
 
-// New creates a new modem instance
-func New() *Modem {
+// New creates a new modem instance with the given version string.
+func New(version string) *Modem {
 	m := &Modem{
 		state:           StateCommand,
 		echo:            true,
@@ -41,6 +42,7 @@ func New() *Modem {
 		xlevel:          4,
 		errorCorrection: 5,
 		compression:     true,
+		version:         version,
 		registers:       NewSRegisters(),
 		initSent:        make(map[string]bool),
 	}
@@ -174,7 +176,7 @@ func (m *Modem) Execute(cmd *Command) (string, ResultCode, bool) {
 		return m.formatResult(ResultOK, cr, lf), ResultOK, false
 
 	case CmdIdentify:
-		info := fmt.Sprintf("%c%cTelix Modem Gateway v1.0%c%c", cr, lf, cr, lf)
+		info := fmt.Sprintf("%c%cTelix Modem Gateway v%s%c%c", cr, lf, m.version, cr, lf)
 		info += fmt.Sprintf("Hayes Compatible 56K%c%c", cr, lf)
 		return info + m.formatResult(ResultOK, cr, lf), ResultOK, false
 

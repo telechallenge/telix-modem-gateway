@@ -31,10 +31,7 @@ const (
 	cp437Block       = "\xDB" // █
 )
 
-// banner is the ANSI art displayed when a client connects, using CP437 encoding.
-var banner = buildBanner()
-
-func buildBanner() string {
+func buildBanner(version string) string {
 	B := cp437Block       // █
 	H := cp437DblHoriz    // ═
 	V := cp437DblVert     // ║
@@ -80,7 +77,7 @@ func buildBanner() string {
 		row(yellow, "         "+B+B+"   "+B+B+"     "+B+B+"     "+B+B+"  "+B+B+" "+B+B) +
 		row(yellow, "         "+B+B+"   "+B+B+B+B+B+B+B+" "+B+B+B+B+B+B+B+" "+B+B+" "+B+B+"  "+B+B) +
 		row("", "") +
-		row(white, "                   Telix Modem Gateway v1.0") +
+		row(white, "                   Telix Modem Gateway v"+version) +
 		row(grey, "                    Hayes Compatible 56000 BPS") +
 		row("", "") +
 		ML + bar + MR + "\r\n" +
@@ -99,6 +96,7 @@ type Session struct {
 	dialer       *dialer.Dialer
 	remoteIP     string
 	clientFilter *dialer.TelnetFilter // filters telnet commands from the client
+	banner       string
 
 	remoteConn net.Conn
 	remoteMu   sync.Mutex
@@ -124,12 +122,13 @@ func NewSession(conn net.Conn, cfg *config.Config, logger *logging.Logger) *Sess
 
 	return &Session{
 		conn:         conn,
-		modem:        modem.New(),
+		modem:        modem.New(cfg.Version),
 		config:       cfg,
 		logger:       logger,
 		dialer:       dialer.New(timeout),
 		remoteIP:     host,
 		clientFilter: dialer.NewTelnetFilter(),
+		banner:       buildBanner(cfg.Version),
 		done:         make(chan struct{}),
 	}
 }
@@ -156,7 +155,7 @@ func (s *Session) Run() {
 	s.drainClientTelnet()
 
 	// Send banner
-	if _, err := s.writeClient([]byte(banner)); err != nil {
+	if _, err := s.writeClient([]byte(s.banner)); err != nil {
 		return
 	}
 

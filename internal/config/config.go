@@ -13,6 +13,7 @@ type Config struct {
 	Logging   LoggingConfig    `yaml:"logging"`
 	Phonebook []PhonebookEntry `yaml:"phonebook"`
 	RateLimit RateLimitConfig  `yaml:"rate_limit"`
+	Version   string           `yaml:"-"` // Set at runtime, not from YAML
 }
 
 type ServerConfig struct {
