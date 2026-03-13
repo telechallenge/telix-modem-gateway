@@ -1,3 +1,4 @@
 log/
 telix
 web/node_modules/
+coverage.out
