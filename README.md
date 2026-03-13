@@ -157,6 +157,7 @@ When `baud` is specified, a successful connection reports `CONNECT <baud>` at th
 | `ATDP<number>` | Dial number (pulse) |
 | `ATH` / `ATH0` | Hang up |
 | `ATH1` | Go off-hook |
+| `ATO` | Return to data mode (after `+++` escape) |
 | `ATE0` / `ATE1` | Echo off / on |
 | `ATV0` / `ATV1` | Verbose off / on (numeric vs word result codes) |
 | `ATQ0` / `ATQ1` | Quiet off / on (suppress result codes) |

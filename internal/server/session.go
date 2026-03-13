@@ -379,6 +379,20 @@ func (s *Session) processCommand(input string) {
 		return
 	}
 
+	// Handle ATO (return to data mode)
+	if cmd.Type == modem.CmdOnline {
+		s.remoteMu.Lock()
+		hasRemote := s.remoteConn != nil
+		s.remoteMu.Unlock()
+		if hasRemote {
+			s.modem.SetState(modem.StateData)
+			s.sendResult(modem.ResultConnect)
+		} else {
+			s.sendResult(modem.ResultNoCarrier)
+		}
+		return
+	}
+
 	response, _, _ := s.modem.Execute(cmd)
 	if response != "" {
 		if _, err := s.writeClient([]byte(response)); err != nil {

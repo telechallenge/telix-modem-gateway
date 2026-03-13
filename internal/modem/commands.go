@@ -31,6 +31,7 @@ const (
 	CmdLockSpeed           // AT&N<n>
 	CmdSetErrorCorrection  // AT&Q0, AT&Q5
 	CmdSetCompression      // AT%C0, AT%C1
+	CmdOnline              // ATO — return to data mode
 )
 
 // Command represents a parsed AT command
@@ -112,6 +113,9 @@ func ParseCommand(input string) *Command {
 		return cmd
 	case "ATI":
 		cmd.Type = CmdIdentify
+		return cmd
+	case "ATO", "ATO0":
+		cmd.Type = CmdOnline
 		return cmd
 	case "AT&V":
 		cmd.Type = CmdViewConfig
