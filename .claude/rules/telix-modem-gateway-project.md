@@ -52,15 +52,17 @@ fail2ban/                   # fail2ban filter + jail config for abuse prevention
 - **Modem state:** `StateCommand` (reads AT commands) ↔ `StateData` (bridges client ↔ remote BBS)
 - **Phonebook matching:** Numbers normalized (strip `-().# ` etc.), entries can require `init`, `baud`, `error_correction`, `compression` — mismatched settings produce garbage + NO CARRIER
 - **Telnet filtering:** `TelnetFilter` (IAC state machine) used in both directions — filters commands, passes data, responds to negotiations. Duplicated in Go (`internal/dialer`) and JS (`web/server.js`)
-- **Security:** Rate limiter (per-IP + global), connection tracker (max total + per-IP), write deadlines (anti-Slowloris), command length limits, log field sanitization, escape sequence injection protection
+- **Security:** Rate limiter (per-IP + global), connection tracker (max total + per-IP), write deadlines (anti-Slowloris), command length limits, log field sanitization, escape sequence injection protection, network-restricted outbound dials (`dialer.allowed_networks`)
+- **Logging:** SessionLogger embeds `session_id` + `source_ip` in every log event for correlation
 - **CP437 encoding:** Banner uses raw CP437 bytes; web client translates CP437 → Unicode for browser display
+- **Version:** Injected at build time via `-ldflags -X main.version=...` from `git describe`. Used in banner, ATI response.
+- **Web client:** Per-IP WebSocket connection limiting (default 5, `MAX_WS_PER_IP` env var)
 
 ## Testing
 
-- Tests in `internal/config/`, `internal/modem/` (commands + S-registers)
+- Tests in `internal/config/`, `internal/modem/`, `internal/dialer/`, `internal/server/`
 - Table-driven tests with `t.Run()` subtests
 - Run: `go test ./...`
-- No web client tests currently
 
 ## Important Notes
 
@@ -68,3 +70,4 @@ fail2ban/                   # fail2ban filter + jail config for abuse prevention
 - Error correction (`&Q5`) and compression (`%C1`) default to `true` in both modem state and phonebook entries
 - S12 (escape guard time) has a minimum of 20 (400ms) to prevent trivial escape attacks
 - The web client's CP437→Unicode table must stay in sync with the Go banner's byte values
+- `dialer.allowed_networks` restricts outbound dials to configured CIDRs — **use in production** to prevent the gateway from reaching arbitrary hosts
