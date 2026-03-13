@@ -227,6 +227,19 @@ class TelnetFilter {
   }
 }
 
+// --- Per-IP connection limiting ---
+const MAX_WS_PER_IP = parseInt(process.env.MAX_WS_PER_IP || '5', 10);
+const ipConnections = new Map(); // ip -> count
+
+function getClientIP(req) {
+  // Trust X-Forwarded-For only from reverse proxies
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
 // --- Express + WebSocket server ---
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -234,8 +247,27 @@ app.use(express.static(path.join(__dirname, 'public')));
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-wss.on('connection', (ws) => {
-  console.log('WebSocket client connected');
+wss.on('connection', (ws, req) => {
+  const clientIP = getClientIP(req);
+  const current = ipConnections.get(clientIP) || 0;
+
+  if (current >= MAX_WS_PER_IP) {
+    console.warn(`WebSocket rejected: ${clientIP} (${current}/${MAX_WS_PER_IP} connections)`);
+    ws.close(1008, 'Too many connections');
+    return;
+  }
+
+  ipConnections.set(clientIP, current + 1);
+  ws.on('close', () => {
+    const count = (ipConnections.get(clientIP) || 1) - 1;
+    if (count <= 0) {
+      ipConnections.delete(clientIP);
+    } else {
+      ipConnections.set(clientIP, count);
+    }
+  });
+
+  console.log(`WebSocket client connected (${clientIP}, ${current + 1}/${MAX_WS_PER_IP})`);
 
   const telnetFilter = new TelnetFilter();
   const tcp = net.createConnection({ host: TELIX_HOST, port: TELIX_PORT }, () => {
