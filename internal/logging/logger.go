@@ -176,59 +176,70 @@ func sanitizeField(s string, maxLen int) string {
 	return string(sanitized)
 }
 
-func (l *Logger) ConnectionAttempt(sourceIP, dialedNumber, result string) {
-	l.Info().
-		Str("event", "connection_attempt").
-		Str("source_ip", sourceIP).
+// SessionLogger wraps Logger with a session ID and source IP baked in.
+type SessionLogger struct {
+	*Logger
+	sessionID string
+	sourceIP  string
+}
+
+// WithSession creates a SessionLogger for a specific session.
+func (l *Logger) WithSession(sessionID, sourceIP string) *SessionLogger {
+	return &SessionLogger{Logger: l, sessionID: sessionID, sourceIP: sourceIP}
+}
+
+func (sl *SessionLogger) event(level Level, event string) *Event {
+	e := sl.Logger.newEvent(level)
+	e.fields["event"] = event
+	e.fields["session_id"] = sl.sessionID
+	e.fields["source_ip"] = sl.sourceIP
+	return e
+}
+
+func (sl *SessionLogger) IdleTimeout() {
+	sl.event(InfoLevel, "idle_timeout").Msg("")
+}
+
+func (sl *SessionLogger) ConnectionAttempt(dialedNumber, result string) {
+	sl.event(InfoLevel, "connection_attempt").
 		Str("dialed_number", sanitizeField(dialedNumber, 100)).
 		Str("result", result).
 		Msg("")
 }
 
-func (l *Logger) InvalidCommand(sourceIP, command string) {
-	l.Warn().
-		Str("event", "invalid_command").
-		Str("source_ip", sourceIP).
+func (sl *SessionLogger) InvalidCommand(command string) {
+	sl.event(WarnLevel, "invalid_command").
 		Str("command", sanitizeField(command, 100)).
 		Msg("")
 }
 
+func (sl *SessionLogger) InvalidNumber(number string) {
+	sl.event(WarnLevel, "invalid_number").
+		Str("dialed_number", sanitizeField(number, 100)).
+		Msg("")
+}
+
+func (sl *SessionLogger) NewConnection() {
+	sl.event(InfoLevel, "new_connection").Msg("")
+}
+
+func (sl *SessionLogger) Disconnected() {
+	sl.event(InfoLevel, "disconnected").Msg("")
+}
+
+func (sl *SessionLogger) MissingSettings(number, setting, detail string) {
+	sl.event(WarnLevel, "missing_settings").
+		Str("dialed_number", sanitizeField(number, 100)).
+		Str("setting", sanitizeField(setting, 50)).
+		Str("detail", sanitizeField(detail, 200)).
+		Msg("")
+}
+
+// RateLimited logs a rate limit event (no session context available).
 func (l *Logger) RateLimited(sourceIP, reason string) {
 	l.Warn().
 		Str("event", "rate_limited").
 		Str("source_ip", sourceIP).
 		Str("reason", reason).
-		Msg("")
-}
-
-func (l *Logger) InvalidNumber(sourceIP, number string) {
-	l.Warn().
-		Str("event", "invalid_number").
-		Str("source_ip", sourceIP).
-		Str("dialed_number", sanitizeField(number, 100)).
-		Msg("")
-}
-
-func (l *Logger) NewConnection(sourceIP string) {
-	l.Info().
-		Str("event", "new_connection").
-		Str("source_ip", sourceIP).
-		Msg("")
-}
-
-func (l *Logger) Disconnected(sourceIP string) {
-	l.Info().
-		Str("event", "disconnected").
-		Str("source_ip", sourceIP).
-		Msg("")
-}
-
-func (l *Logger) MissingSettings(sourceIP, number, setting, detail string) {
-	l.Warn().
-		Str("event", "missing_settings").
-		Str("source_ip", sourceIP).
-		Str("dialed_number", sanitizeField(number, 100)).
-		Str("setting", sanitizeField(setting, 50)).
-		Str("detail", sanitizeField(detail, 200)).
 		Msg("")
 }

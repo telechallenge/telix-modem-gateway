@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	cryptoRand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"math/rand"
@@ -17,6 +18,12 @@ import (
 	"telix/internal/logging"
 	"telix/internal/modem"
 )
+
+func generateSessionID() string {
+	b := make([]byte, 4)
+	cryptoRand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 // CP437 box-drawing characters used in the banner.
 const (
@@ -92,7 +99,7 @@ type Session struct {
 	conn         net.Conn
 	modem        *modem.Modem
 	config       *config.Config
-	logger       *logging.Logger
+	logger       *logging.SessionLogger
 	dialer       *dialer.Dialer
 	remoteIP     string
 	clientFilter *dialer.TelnetFilter // filters telnet commands from the client
@@ -120,11 +127,13 @@ func NewSession(conn net.Conn, cfg *config.Config, logger *logging.Logger) *Sess
 		timeout = 300 * time.Second
 	}
 
+	sessionID := generateSessionID()
+
 	return &Session{
 		conn:         conn,
 		modem:        modem.New(cfg.Version),
 		config:       cfg,
-		logger:       logger,
+		logger:       logger.WithSession(sessionID, host),
 		dialer:       dialer.New(timeout),
 		remoteIP:     host,
 		clientFilter: dialer.NewTelnetFilter(),
@@ -278,10 +287,7 @@ func (s *Session) commandLoop() {
 			line, err := s.readLine(reader)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					s.logger.Info().
-						Str("event", "idle_timeout").
-						Str("source_ip", s.remoteIP).
-						Msg("")
+					s.logger.IdleTimeout()
 				}
 				return
 			}
@@ -362,7 +368,7 @@ func (s *Session) processCommand(input string) {
 	cmd := modem.ParseCommand(input)
 
 	if cmd.Type == modem.CmdUnknown {
-		s.logger.InvalidCommand(s.remoteIP, input)
+		s.logger.InvalidCommand(input)
 		s.sendResult(modem.ResultError)
 		return
 	}
@@ -400,7 +406,7 @@ func (s *Session) handleDial(number string) {
 	// Look up number in phonebook
 	entry := s.config.LookupNumber(number)
 	if entry == nil {
-		s.logger.InvalidNumber(s.remoteIP, number)
+		s.logger.InvalidNumber(number)
 		s.sendNoAnswer()
 		return
 	}
@@ -410,14 +416,14 @@ func (s *Session) handleDial(number string) {
 	settingsOK := true
 
 	if rs.Init != "" && !s.modem.HasSentInit(rs.Init) {
-		s.logger.MissingSettings(s.remoteIP, number, "init", rs.Init)
+		s.logger.MissingSettings(number, "init", rs.Init)
 		settingsOK = false
 	}
 
 	if rs.Baud != 0 {
 		modemBaud := s.modem.GetBaud()
 		if modemBaud != rs.Baud {
-			s.logger.MissingSettings(s.remoteIP, number, "baud", fmt.Sprintf("%d (modem: %d)", rs.Baud, modemBaud))
+			s.logger.MissingSettings(number, "baud", fmt.Sprintf("%d (modem: %d)", rs.Baud, modemBaud))
 			settingsOK = false
 		}
 	}
@@ -426,7 +432,7 @@ func (s *Session) handleDial(number string) {
 		wantEC := *rs.ErrorCorrection
 		haveEC := s.modem.GetErrorCorrection() == 5
 		if wantEC != haveEC {
-			s.logger.MissingSettings(s.remoteIP, number, "error_correction", fmt.Sprintf("want %v, have %v", wantEC, haveEC))
+			s.logger.MissingSettings(number, "error_correction", fmt.Sprintf("want %v, have %v", wantEC, haveEC))
 			settingsOK = false
 		}
 	}
@@ -435,7 +441,7 @@ func (s *Session) handleDial(number string) {
 		wantComp := *rs.Compression
 		haveComp := s.modem.GetCompression()
 		if wantComp != haveComp {
-			s.logger.MissingSettings(s.remoteIP, number, "compression", fmt.Sprintf("want %v, have %v", wantComp, haveComp))
+			s.logger.MissingSettings(number, "compression", fmt.Sprintf("want %v, have %v", wantComp, haveComp))
 			settingsOK = false
 		}
 	}
@@ -450,7 +456,7 @@ func (s *Session) handleDial(number string) {
 	timeout := time.Duration(s.modem.Registers().GetConnectionTimeout()) * time.Second
 	d := dialer.New(timeout)
 
-	s.logger.ConnectionAttempt(s.remoteIP, number, "attempting")
+	s.logger.ConnectionAttempt(number, "attempting")
 
 	// Dial in background so we can ring while waiting
 	type dialResult struct {
@@ -479,7 +485,7 @@ func (s *Session) handleDial(number string) {
 		case res := <-ch:
 			// Connection resolved during ringing
 			if res.err != nil {
-				s.logger.ConnectionAttempt(s.remoteIP, number, "failed")
+				s.logger.ConnectionAttempt(number, "failed")
 				s.sendResult(modem.ResultNoCarrier)
 				return
 			}
@@ -488,7 +494,7 @@ func (s *Session) handleDial(number string) {
 			s.remoteMu.Unlock()
 			s.modemHandshakePause()
 			s.modem.SetState(modem.StateData)
-			s.logger.ConnectionAttempt(s.remoteIP, number, "success")
+			s.logger.ConnectionAttempt(number, "success")
 			s.sendConnect(rs.Baud)
 			return
 		case <-time.After(time.Duration(2500+rand.Intn(1000)) * time.Millisecond):
@@ -501,12 +507,12 @@ func (s *Session) handleDial(number string) {
 	select {
 	case res = <-ch:
 	case <-time.After(timeout + 5*time.Second):
-		s.logger.ConnectionAttempt(s.remoteIP, number, "failed")
+		s.logger.ConnectionAttempt(number, "failed")
 		s.sendResult(modem.ResultNoCarrier)
 		return
 	}
 	if res.err != nil {
-		s.logger.ConnectionAttempt(s.remoteIP, number, "failed")
+		s.logger.ConnectionAttempt(number, "failed")
 		s.sendResult(modem.ResultNoCarrier)
 		return
 	}
@@ -517,7 +523,7 @@ func (s *Session) handleDial(number string) {
 
 	s.modemHandshakePause()
 	s.modem.SetState(modem.StateData)
-	s.logger.ConnectionAttempt(s.remoteIP, number, "success")
+	s.logger.ConnectionAttempt(number, "success")
 	s.sendConnect(rs.Baud)
 }
 
