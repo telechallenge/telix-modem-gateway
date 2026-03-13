@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -260,5 +262,275 @@ func TestLookupNumber(t *testing.T) {
 	entry = cfg.LookupNumber("000-000-0000")
 	if entry != nil {
 		t.Error("LookupNumber should return nil for unknown number")
+	}
+}
+
+func TestLoadConfigWithAllowedNetworks(t *testing.T) {
+	yamlData := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 23
+    name: "Test BBS"
+
+dialer:
+  allowed_networks:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.WriteString(yamlData); err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	cfg, err := Load(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(cfg.Dialer.AllowedNetworks) != 3 {
+		t.Fatalf("AllowedNetworks len = %d, want 3", len(cfg.Dialer.AllowedNetworks))
+	}
+
+	parsed := cfg.Dialer.ParsedNetworks()
+	if len(parsed) != 3 {
+		t.Fatalf("ParsedNetworks() len = %d, want 3", len(parsed))
+	}
+
+	// Verify that each parsed CIDR matches the expected network
+	expectedCIDRs := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	for i, expected := range expectedCIDRs {
+		if parsed[i].String() != expected {
+			t.Errorf("ParsedNetworks()[%d] = %s, want %s", i, parsed[i].String(), expected)
+		}
+	}
+}
+
+func TestLoadConfigInvalidCIDR(t *testing.T) {
+	yamlData := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 23
+    name: "Test BBS"
+
+dialer:
+  allowed_networks:
+    - "not-a-cidr"
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.WriteString(yamlData); err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	_, err = Load(tmpfile.Name())
+	if err == nil {
+		t.Fatal("expected error for invalid CIDR")
+	}
+	if !strings.Contains(err.Error(), "invalid CIDR") {
+		t.Errorf("error should mention 'invalid CIDR', got: %v", err)
+	}
+}
+
+func TestLoadConfigEmptyAllowedNetworks(t *testing.T) {
+	yamlData := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 23
+    name: "Test BBS"
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.WriteString(yamlData); err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	cfg, err := Load(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	parsed := cfg.Dialer.ParsedNetworks()
+	if len(parsed) != 0 {
+		t.Errorf("ParsedNetworks() len = %d, want 0 when no allowed_networks configured", len(parsed))
+	}
+}
+
+func TestValidateInvalidPort(t *testing.T) {
+	tests := []struct {
+		name string
+		port int
+	}{
+		{"port zero", 0},
+		{"port too high", 70000},
+		{"negative port", -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yamlData := fmt.Sprintf(`
+server:
+  port: %d
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 23
+    name: "Test BBS"
+`, tt.port)
+			tmpfile, err := os.CreateTemp("", "config*.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(tmpfile.Name())
+
+			if _, err := tmpfile.WriteString(yamlData); err != nil {
+				t.Fatal(err)
+			}
+			tmpfile.Close()
+
+			_, err = Load(tmpfile.Name())
+			if err == nil {
+				t.Fatalf("expected error for port %d", tt.port)
+			}
+			if !strings.Contains(err.Error(), "port") {
+				t.Errorf("error should mention 'port', got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateInvalidMaxConnections(t *testing.T) {
+	yamlData := `
+server:
+  port: 2323
+  max_connections: 0
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 23
+    name: "Test BBS"
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.WriteString(yamlData); err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	_, err = Load(tmpfile.Name())
+	if err == nil {
+		t.Fatal("expected error for max_connections 0")
+	}
+	if !strings.Contains(err.Error(), "max_connections") {
+		t.Errorf("error should mention 'max_connections', got: %v", err)
+	}
+}
+
+func TestValidateEmptyPhonebookNumber(t *testing.T) {
+	yamlData := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: ""
+    host: "127.0.0.1"
+    port: 23
+    name: "Test BBS"
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.WriteString(yamlData); err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	_, err = Load(tmpfile.Name())
+	if err == nil {
+		t.Fatal("expected error for empty phonebook number")
+	}
+	if !strings.Contains(err.Error(), "number is required") {
+		t.Errorf("error should mention 'number is required', got: %v", err)
+	}
+}
+
+func TestValidateEmptyPhonebookHost(t *testing.T) {
+	yamlData := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    host: ""
+    port: 23
+    name: "Test BBS"
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.WriteString(yamlData); err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	_, err = Load(tmpfile.Name())
+	if err == nil {
+		t.Fatal("expected error for empty phonebook host")
+	}
+	if !strings.Contains(err.Error(), "host is required") {
+		t.Errorf("error should mention 'host is required', got: %v", err)
 	}
 }

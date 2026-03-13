@@ -2,7 +2,10 @@ package dialer
 
 import (
 	"bytes"
+	"net"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestTelnetFilter(t *testing.T) {
@@ -308,5 +311,127 @@ func TestTelnetFilter(t *testing.T) {
 				t.Errorf("responses:\n  got  %v\n  want %v", allResponses, tt.wantResponse)
 			}
 		})
+	}
+}
+
+// --- Network restriction tests ---
+
+func mustParseCIDR(t *testing.T, cidr string) *net.IPNet {
+	t.Helper()
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatalf("invalid CIDR %q: %v", cidr, err)
+	}
+	return ipNet
+}
+
+func TestDialerIPAllowed_WithinCIDR(t *testing.T) {
+	d := New(5*time.Second, []*net.IPNet{
+		mustParseCIDR(t, "10.0.0.0/8"),
+	})
+	ip := net.ParseIP("10.1.2.3")
+	if !d.ipAllowed(ip) {
+		t.Errorf("ipAllowed(%s) = false, want true for CIDR 10.0.0.0/8", ip)
+	}
+}
+
+func TestDialerIPAllowed_OutsideCIDR(t *testing.T) {
+	d := New(5*time.Second, []*net.IPNet{
+		mustParseCIDR(t, "10.0.0.0/8"),
+	})
+	ip := net.ParseIP("192.168.1.1")
+	if d.ipAllowed(ip) {
+		t.Errorf("ipAllowed(%s) = true, want false for CIDR 10.0.0.0/8", ip)
+	}
+}
+
+func TestDialerIPAllowed_MultipleCIDRs(t *testing.T) {
+	d := New(5*time.Second, []*net.IPNet{
+		mustParseCIDR(t, "10.0.0.0/8"),
+		mustParseCIDR(t, "172.16.0.0/12"),
+		mustParseCIDR(t, "192.168.0.0/16"),
+	})
+
+	tests := []struct {
+		ip   string
+		want bool
+	}{
+		{"10.255.0.1", true},
+		{"172.20.5.5", true},
+		{"192.168.99.1", true},
+		{"8.8.8.8", false},
+	}
+
+	for _, tt := range tests {
+		ip := net.ParseIP(tt.ip)
+		got := d.ipAllowed(ip)
+		if got != tt.want {
+			t.Errorf("ipAllowed(%s) = %v, want %v", tt.ip, got, tt.want)
+		}
+	}
+}
+
+func TestDialerIPAllowed_EmptyNetworks(t *testing.T) {
+	d := New(5*time.Second, nil)
+	ip := net.ParseIP("10.0.0.1")
+	if d.ipAllowed(ip) {
+		t.Errorf("ipAllowed(%s) with empty allowedNetworks = true, want false", ip)
+	}
+}
+
+func TestDialerCheckAllowed_IPAddress(t *testing.T) {
+	d := New(5*time.Second, []*net.IPNet{
+		mustParseCIDR(t, "192.168.0.0/16"),
+	})
+	err := d.checkAllowed("192.168.1.100")
+	if err != nil {
+		t.Errorf("checkAllowed(192.168.1.100) returned error: %v", err)
+	}
+}
+
+func TestDialerCheckAllowed_IPAddress_Rejected(t *testing.T) {
+	d := New(5*time.Second, []*net.IPNet{
+		mustParseCIDR(t, "192.168.0.0/16"),
+	})
+	err := d.checkAllowed("10.0.0.1")
+	if err == nil {
+		t.Error("checkAllowed(10.0.0.1) should fail when only 192.168.0.0/16 is allowed")
+	}
+	if !strings.Contains(err.Error(), "not in allowed networks") {
+		t.Errorf("error message should mention 'not in allowed networks', got: %v", err)
+	}
+}
+
+func TestDialerCheckAllowed_Hostname_Localhost(t *testing.T) {
+	// localhost may resolve to both 127.0.0.1 and ::1, so include both
+	// IPv4 and IPv6 loopback CIDRs. checkAllowed rejects if ANY resolved
+	// IP is outside the allowed set.
+	d := New(5*time.Second, []*net.IPNet{
+		mustParseCIDR(t, "127.0.0.0/8"),
+		mustParseCIDR(t, "::1/128"),
+	})
+	err := d.checkAllowed("localhost")
+	if err != nil {
+		t.Errorf("checkAllowed(localhost) with loopback CIDRs allowed returned error: %v", err)
+	}
+}
+
+func TestDialerDial_RejectedByNetwork(t *testing.T) {
+	// Only allow 10.0.0.0/8 — dialing 127.0.0.1 should be rejected
+	// without establishing a TCP connection.
+	d := New(5*time.Second, []*net.IPNet{
+		mustParseCIDR(t, "10.0.0.0/8"),
+	})
+
+	conn, err := d.Dial("127.0.0.1", 9999)
+	if conn != nil {
+		conn.Close()
+		t.Error("Dial should not return a connection when IP is outside allowed networks")
+	}
+	if err == nil {
+		t.Fatal("Dial should return an error when IP is outside allowed networks")
+	}
+	if !strings.Contains(err.Error(), "not in allowed networks") {
+		t.Errorf("error should mention 'not in allowed networks', got: %v", err)
 	}
 }
