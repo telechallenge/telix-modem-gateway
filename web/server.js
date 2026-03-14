@@ -207,6 +207,6 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Telix web client listening on http://localhost:${PORT}`);
+  console.log(`Telix web terminal listening on http://0.0.0.0:${PORT}`);
   console.log(`Proxying to Telix at ${TELIX_HOST}:${TELIX_PORT}`);
 });
