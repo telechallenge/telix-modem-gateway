@@ -8,22 +8,11 @@ const TELIX_HOST = process.env.TELIX_HOST || 'localhost';
 const TELIX_PORT = parseInt(process.env.TELIX_PORT || '2323', 10);
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-// --- Telnet protocol constants ---
+// --- Telnet protocol constants (only what's needed for NAWS generation) ---
 const IAC  = 255;
-const DONT = 254;
-const DO   = 253;
-const WONT = 252;
-const WILL = 251;
 const SB   = 250;
 const SE   = 240;
-
-const ECHO              = 1;
-const SUPPRESS_GO_AHEAD = 3;
-const TERMINAL_TYPE     = 24;
-const NAWS              = 31;
-
-const TTYPE_IS   = 0;
-const TTYPE_SEND = 1;
+const NAWS = 31;
 
 // --- CP437 to Unicode mapping ---
 // Control chars and ASCII printable pass through; this table covers 0x00-0x1F
@@ -111,122 +100,6 @@ function cp437ToUtf8(buf) {
   return result;
 }
 
-// --- TelnetFilter — ported from internal/dialer/dialer.go ---
-const STATE_DATA     = 0;
-const STATE_IAC      = 1;
-const STATE_COMMAND  = 2;
-const STATE_SB       = 3;
-const STATE_SB_DATA  = 4;
-const STATE_SB_IAC   = 5;
-
-class TelnetFilter {
-  constructor() {
-    this.state = STATE_DATA;
-    this.command = 0;
-    this.optData = [];
-  }
-
-  filter(data) {
-    const filtered = [];
-    const responses = [];
-
-    for (const b of data) {
-      switch (this.state) {
-        case STATE_DATA:
-          if (b === IAC) {
-            this.state = STATE_IAC;
-          } else {
-            filtered.push(b);
-          }
-          break;
-
-        case STATE_IAC:
-          if (b === IAC) {
-            filtered.push(IAC);
-            this.state = STATE_DATA;
-          } else if (b === WILL || b === WONT || b === DO || b === DONT) {
-            this.command = b;
-            this.state = STATE_COMMAND;
-          } else if (b === SB) {
-            this.state = STATE_SB;
-            this.optData = [];
-          } else {
-            this.state = STATE_DATA;
-          }
-          break;
-
-        case STATE_COMMAND:
-          responses.push(...this.respondToOption(this.command, b));
-          this.state = STATE_DATA;
-          break;
-
-        case STATE_SB:
-          this.optData.push(b);
-          this.state = STATE_SB_DATA;
-          break;
-
-        case STATE_SB_DATA:
-          if (b === IAC) {
-            this.state = STATE_SB_IAC;
-          } else if (this.optData.length < 512) {
-            this.optData.push(b);
-          } else {
-            this.optData = [];
-            this.state = STATE_DATA;
-          }
-          break;
-
-        case STATE_SB_IAC:
-          if (b === SE) {
-            responses.push(...this.handleSubnegotiation());
-            this.state = STATE_DATA;
-          } else if (b === IAC) {
-            this.optData.push(IAC);
-            this.state = STATE_SB_DATA;
-          } else {
-            this.state = STATE_DATA;
-          }
-          break;
-      }
-    }
-
-    return { filtered: Buffer.from(filtered), responses: Buffer.from(responses) };
-  }
-
-  handleSubnegotiation() {
-    if (this.optData.length < 2) return [];
-
-    const opt = this.optData[0];
-    const qualifier = this.optData[1];
-
-    if (opt === TERMINAL_TYPE && qualifier === TTYPE_SEND) {
-      const ttype = Buffer.from('ANSI');
-      return [IAC, SB, TERMINAL_TYPE, TTYPE_IS, ...ttype, IAC, SE];
-    }
-
-    return [];
-  }
-
-  respondToOption(cmd, opt) {
-    switch (cmd) {
-      case DO:
-        if (opt === SUPPRESS_GO_AHEAD || opt === TERMINAL_TYPE || opt === NAWS) {
-          return [IAC, WILL, opt];
-        }
-        return [IAC, WONT, opt];
-      case WILL:
-        if (opt === SUPPRESS_GO_AHEAD || opt === ECHO) {
-          return [IAC, DO, opt];
-        }
-        return [IAC, DONT, opt];
-      case DONT:
-      case WONT:
-        return [];
-    }
-    return [];
-  }
-}
-
 // --- Per-IP connection limiting ---
 const MAX_WS_PER_IP = parseInt(process.env.MAX_WS_PER_IP || '5', 10);
 const ipConnections = new Map(); // ip -> count
@@ -258,53 +131,23 @@ wss.on('connection', (ws, req) => {
   }
 
   ipConnections.set(clientIP, current + 1);
-  ws.on('close', () => {
-    const count = (ipConnections.get(clientIP) || 1) - 1;
-    if (count <= 0) {
-      ipConnections.delete(clientIP);
-    } else {
-      ipConnections.set(clientIP, count);
-    }
-  });
-
   console.log(`WebSocket client connected (${clientIP}, ${current + 1}/${MAX_WS_PER_IP})`);
 
-  const telnetFilter = new TelnetFilter();
-  const tcp = net.createConnection({ host: TELIX_HOST, port: TELIX_PORT }, () => {
+  const tcp = net.createConnection({ host: TELIX_HOST, port: TELIX_PORT });
+
+  tcp.on('connect', () => {
     console.log(`Connected to Telix at ${TELIX_HOST}:${TELIX_PORT}`);
   });
 
+  // Data from Telix → browser: direct CP437→UTF-8 passthrough (Go server
+  // already handles telnet negotiation, so data is clean application bytes).
   tcp.on('data', (data) => {
-    const { filtered, responses } = telnetFilter.filter(data);
-
-    // Send telnet responses back to Telix
-    if (responses.length > 0) {
-      tcp.write(responses);
-    }
-
-    // Convert CP437 to UTF-8 and send to browser
-    if (filtered.length > 0) {
-      const text = cp437ToUtf8(filtered);
-      if (ws.readyState === ws.OPEN) {
-        ws.send(text);
-      }
-    }
-  });
-
-  tcp.on('error', (err) => {
-    console.error('TCP error:', err.message);
     if (ws.readyState === ws.OPEN) {
-      ws.close(1011, 'Backend connection error');
+      ws.send(cp437ToUtf8(data));
     }
   });
 
-  tcp.on('close', () => {
-    console.log('TCP connection closed');
-    if (ws.readyState === ws.OPEN) {
-      ws.close(1000, 'Backend disconnected');
-    }
-  });
-
+  // Data from browser → Telix
   ws.on('message', (data, isBinary) => {
     if (isBinary && data.length >= 3 && data[0] === 0x00) {
       // Resize message: 0x00 + cols(uint16 BE) + rows(uint16 BE)
@@ -324,14 +167,42 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', () => {
-    console.log('WebSocket client disconnected');
+  // Consolidated teardown — ensures IP counter is always decremented
+  // and both sockets are cleaned up regardless of which side closes first.
+  let cleaned = false;
+  function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
     tcp.destroy();
+    if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+      ws.close();
+    }
+    const count = (ipConnections.get(clientIP) || 1) - 1;
+    if (count <= 0) {
+      ipConnections.delete(clientIP);
+    } else {
+      ipConnections.set(clientIP, count);
+    }
+  }
+
+  tcp.on('error', (err) => {
+    console.error(`TCP error (${clientIP}):`, err.message);
+    cleanup();
+  });
+
+  tcp.on('close', () => {
+    console.log(`TCP connection closed (${clientIP})`);
+    cleanup();
+  });
+
+  ws.on('close', () => {
+    console.log(`WebSocket client disconnected (${clientIP})`);
+    cleanup();
   });
 
   ws.on('error', (err) => {
-    console.error('WebSocket error:', err.message);
-    tcp.destroy();
+    console.error(`WebSocket error (${clientIP}):`, err.message);
+    cleanup();
   });
 });
 
