@@ -247,4 +247,3 @@ func (c *ConnectionTracker) Count() int {
 	defer c.mu.Unlock()
 	return c.total
 }
-

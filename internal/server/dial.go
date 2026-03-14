@@ -172,10 +172,10 @@ func (s *Session) modemHandshakePause() {
 // simulate line-quality variation — just like the real thing.
 var connectSpeeds = []int{
 	56000, 56000, 56000, 56000, 56000, // 50% chance
-	33600, 33600,                       // 20%
-	31200,                              // 10%
-	28800,                              // 10%
-	24000,                              // 10%
+	33600, 33600, // 20%
+	31200, // 10%
+	28800, // 10%
+	24000, // 10%
 }
 
 func pickConnectSpeed() int {

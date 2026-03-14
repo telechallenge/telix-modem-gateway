@@ -122,9 +122,9 @@ func (d *Dialer) negotiate(conn net.Conn) {
 
 // TelnetFilter filters telnet commands from data stream
 type TelnetFilter struct {
-	state    filterState
-	command  byte
-	optData  []byte
+	state   filterState
+	command byte
+	optData []byte
 }
 
 type filterState int

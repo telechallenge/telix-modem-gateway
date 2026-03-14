@@ -24,6 +24,7 @@ internal/
   logging/                  # Custom structured logger (JSON/text), log rotation, sanitization
   modem/                    # AT command parser, modem state machine, S-registers, result codes
   server/                   # TCP listener, session lifecycle, rate limiter, connection tracker
+    dial.go                 # Dial orchestration: phonebook lookup, settings validation, ring/connect simulation
 web/
   server.js                 # Express + WebSocket proxy (bridges browser ↔ Telix via TCP)
   public/                   # Static frontend: xterm.js terminal, CP437 font, CSS
@@ -51,7 +52,7 @@ fail2ban/                   # fail2ban filter + jail config for abuse prevention
 - **Session lifecycle:** `server.go` accepts TCP → creates `Session` → `session.go` runs command/data loop → `modem` package handles AT parsing + state
 - **Modem state:** `StateCommand` (reads AT commands) ↔ `StateData` (bridges client ↔ remote BBS)
 - **Phonebook matching:** Numbers normalized (strip `-().# ` etc.), entries can require `init`, `baud`, `error_correction`, `compression` — mismatched settings produce garbage + NO CARRIER
-- **Telnet filtering:** `TelnetFilter` (IAC state machine) used in both directions — filters commands, passes data, responds to negotiations. Duplicated in Go (`internal/dialer`) and JS (`web/server.js`)
+- **Telnet filtering:** `TelnetFilter` (IAC state machine in `internal/dialer`) filters telnet commands from data streams in both directions. Go server handles all negotiation; web client is a passthrough proxy (CP437→Unicode only)
 - **Security:** Rate limiter (per-IP + global), connection tracker (max total + per-IP), write deadlines (anti-Slowloris), command length limits, log field sanitization, escape sequence injection protection, network-restricted outbound dials (`dialer.allowed_networks`)
 - **Logging:** SessionLogger embeds `session_id` + `source_ip` in every log event for correlation
 - **CP437 encoding:** Banner uses raw CP437 bytes; web client translates CP437 → Unicode for browser display

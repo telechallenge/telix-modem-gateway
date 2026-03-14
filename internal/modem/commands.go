@@ -10,28 +10,28 @@ import (
 type CommandType int
 
 const (
-	CmdUnknown CommandType = iota
-	CmdAT              // Just AT
-	CmdReset           // ATZ
-	CmdFactoryReset    // AT&F
-	CmdDial            // ATDT or ATDP
-	CmdHangup          // ATH or ATH0
-	CmdOffHook         // ATH1
-	CmdEchoOff         // ATE0
-	CmdEchoOn          // ATE1
-	CmdVerboseOff      // ATV0
-	CmdVerboseOn       // ATV1
-	CmdQuietOff        // ATQ0
-	CmdQuietOn         // ATQ1
-	CmdIdentify        // ATI
-	CmdViewConfig      // AT&V
-	CmdSRegisterSet    // ATS<n>=<v>
-	CmdSRegisterQuery  // ATS<n>?
-	CmdSetX            // ATX0-ATX4
-	CmdLockSpeed           // AT&N<n>
-	CmdSetErrorCorrection  // AT&Q0, AT&Q5
-	CmdSetCompression      // AT%C0, AT%C1
-	CmdOnline              // ATO — return to data mode
+	CmdUnknown            CommandType = iota
+	CmdAT                             // Just AT
+	CmdReset                          // ATZ
+	CmdFactoryReset                   // AT&F
+	CmdDial                           // ATDT or ATDP
+	CmdHangup                         // ATH or ATH0
+	CmdOffHook                        // ATH1
+	CmdEchoOff                        // ATE0
+	CmdEchoOn                         // ATE1
+	CmdVerboseOff                     // ATV0
+	CmdVerboseOn                      // ATV1
+	CmdQuietOff                       // ATQ0
+	CmdQuietOn                        // ATQ1
+	CmdIdentify                       // ATI
+	CmdViewConfig                     // AT&V
+	CmdSRegisterSet                   // ATS<n>=<v>
+	CmdSRegisterQuery                 // ATS<n>?
+	CmdSetX                           // ATX0-ATX4
+	CmdLockSpeed                      // AT&N<n>
+	CmdSetErrorCorrection             // AT&Q0, AT&Q5
+	CmdSetCompression                 // AT%C0, AT%C1
+	CmdOnline                         // ATO — return to data mode
 )
 
 // Command represents a parsed AT command
@@ -50,12 +50,12 @@ var SpeedCodeMap = map[int]int{
 }
 
 var (
-	sRegSetPattern   = regexp.MustCompile(`(?i)^ATS(\d+)=(\d+)$`)
-	sRegQueryPattern = regexp.MustCompile(`(?i)^ATS(\d+)\?$`)
-	dialPattern      = regexp.MustCompile(`(?i)^ATD[TP]([0-9\-\(\)\.\*# ]+)$`)
-	lockSpeedPattern      = regexp.MustCompile(`(?i)^AT&N(\d+)$`)
-	errorCorrPattern      = regexp.MustCompile(`(?i)^AT&Q(\d)$`)
-	compressionPattern    = regexp.MustCompile(`(?i)^AT%C(\d)$`)
+	sRegSetPattern     = regexp.MustCompile(`(?i)^ATS(\d+)=(\d+)$`)
+	sRegQueryPattern   = regexp.MustCompile(`(?i)^ATS(\d+)\?$`)
+	dialPattern        = regexp.MustCompile(`(?i)^ATD[TP]([0-9\-\(\)\.\*# ]+)$`)
+	lockSpeedPattern   = regexp.MustCompile(`(?i)^AT&N(\d+)$`)
+	errorCorrPattern   = regexp.MustCompile(`(?i)^AT&Q(\d)$`)
+	compressionPattern = regexp.MustCompile(`(?i)^AT%C(\d)$`)
 )
 
 // ParseCommand parses an AT command string

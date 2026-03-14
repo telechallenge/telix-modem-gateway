@@ -19,7 +19,7 @@ type Config struct {
 }
 
 type DialerConfig struct {
-	AllowedNetworks []string   `yaml:"allowed_networks"` // CIDRs like "10.0.0.0/8"
+	AllowedNetworks []string `yaml:"allowed_networks"` // CIDRs like "10.0.0.0/8"
 	parsedNetworks  []*net.IPNet
 }
 
