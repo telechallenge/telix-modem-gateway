@@ -1,4 +1,4 @@
 log/
-telix
+/telix
 web/node_modules/
 coverage.out
