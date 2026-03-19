@@ -80,15 +80,33 @@ document.addEventListener('DOMContentLoaded', () => {
   function checkModemState(text) {
     if (/CONNECT\b/.test(text)) {
       setConnected(true);
-    } else if (/NO CARRIER|BUSY|NO ANSWER|NO DIALTONE/.test(text)) {
+      ModemAudio.onConnect();
+    } else if (/BUSY/.test(text)) {
       setConnected(false);
+      ModemAudio.onBusy();
+    } else if (/NO CARRIER|NO ANSWER|NO DIALTONE/.test(text)) {
+      setConnected(false);
+      ModemAudio.onFailure();
     } else if (/RING/.test(text)) {
       ledOn('oh');
+      ModemAudio.onRing();
     }
   }
 
   // Modem power on
   ledOn('mr');
+
+  // Mute button
+  const muteBtn = document.getElementById('muteBtn');
+  const muteIcon = document.getElementById('muteIcon');
+  function updateMuteIcon() {
+    muteIcon.textContent = ModemAudio.isMuted() ? '\u{1F507}' : '\u{1F50A}';
+  }
+  updateMuteIcon();
+  muteBtn.addEventListener('click', () => {
+    ModemAudio.setMuted(!ModemAudio.isMuted());
+    updateMuteIcon();
+  });
 
   // WebSocket connection
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -120,6 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ledOff('tr');
     ledOff('aa');
     setConnected(false);
+    ModemAudio.stopAll();
   };
 
   ws.onerror = () => {
@@ -127,10 +146,25 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // Send keystrokes to server
+  let cmdBuffer = '';
   term.onData((data) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(data);
       flashLed('sd');
+      ModemAudio.initOnGesture();
+
+      // Buffer keystrokes to detect ATD commands
+      for (const ch of data) {
+        if (ch === '\r' || ch === '\n') {
+          const match = cmdBuffer.match(/^ATD[TP]([0-9\-\(\)\.\*# ]+)$/i);
+          if (match) ModemAudio.dialNumber(match[1].replace(/[-().\s]/g, ''));
+          cmdBuffer = '';
+        } else if (ch === '\x08' || ch === '\x7F') {
+          cmdBuffer = cmdBuffer.slice(0, -1);
+        } else {
+          cmdBuffer += ch;
+        }
+      }
     }
   });
 

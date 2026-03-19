@@ -1,0 +1,12 @@
+{"event":"startup","level":"info","phonebook_entries":4,"timestamp":"2026-03-19T20:38:49Z","version":"v0.1.0-29-g7d153e1"}
+{"event":"server_started","level":"info","port":2323,"timestamp":"2026-03-19T20:38:49Z"}
+{"event":"new_connection","level":"info","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:38:53Z"}
+{"dialed_number":"8005551212","event":"invalid_number","level":"warn","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:39:06Z"}
+{"command":"atdt8005551234","event":"invalid_command","level":"warn","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:39:33Z"}
+{"command":"atdt8005551234","event":"invalid_command","level":"warn","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:39:40Z"}
+{"command":"ATDT8005551234","event":"invalid_command","level":"warn","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:39:47Z"}
+{"command":"ATDT 8005551234","event":"invalid_command","level":"warn","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:40:09Z"}
+{"command":"","event":"invalid_command","level":"warn","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:40:13Z"}
+{"event":"disconnected","level":"info","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:40:14Z"}
+{"event":"shutdown_signal","level":"info","signal":"interrupt","timestamp":"2026-03-19T20:40:24Z"}
+{"event":"server_stopped","level":"info","timestamp":"2026-03-19T20:40:24Z"}

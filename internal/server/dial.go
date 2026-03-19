@@ -2,9 +2,12 @@ package server
 
 import (
 	cryptoRand "crypto/rand"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
+	"syscall"
 	"time"
 
 	"telix/internal/config"
@@ -32,7 +35,7 @@ func (s *Session) handleDial(number string) {
 	entry := s.config.LookupNumber(number)
 	if entry == nil {
 		s.logger.InvalidNumber(number)
-		s.sendNoAnswer()
+		s.sendIntercept()
 		return
 	}
 
@@ -77,7 +80,11 @@ func (s *Session) handleDial(number string) {
 			// Connection resolved during ringing
 			if res.err != nil {
 				s.logger.ConnectionAttempt(number, "failed")
-				s.sendResult(modem.ResultNoCarrier)
+				if isConnectionRefused(res.err) {
+					s.sendResult(modem.ResultBusy)
+				} else {
+					s.sendResult(modem.ResultNoCarrier)
+				}
 				return
 			}
 			s.remoteMu.Lock()
@@ -104,7 +111,11 @@ func (s *Session) handleDial(number string) {
 	}
 	if res.err != nil {
 		s.logger.ConnectionAttempt(number, "failed")
-		s.sendResult(modem.ResultNoCarrier)
+		if isConnectionRefused(res.err) {
+			s.sendResult(modem.ResultBusy)
+		} else {
+			s.sendResult(modem.ResultNoCarrier)
+		}
 		return
 	}
 
@@ -217,6 +228,27 @@ func (s *Session) sendNoAnswer() {
 		time.Sleep(time.Duration(2500+rand.Intn(1000)) * time.Millisecond)
 	}
 	s.sendResult(modem.ResultNoAnswer)
+}
+
+// sendIntercept simulates a telco intercept announcement for an invalid number.
+// A brief pause (like the "your call cannot be completed" recording) then NO CARRIER,
+// with no ringing — so the client can distinguish this from a normal failed connection.
+func (s *Session) sendIntercept() {
+	time.Sleep(time.Duration(2000+rand.Intn(1500)) * time.Millisecond)
+	s.sendResult(modem.ResultNoCarrier)
+}
+
+// isConnectionRefused checks if an error is a TCP connection refused error,
+// indicating the remote host is up but the port is closed.
+func isConnectionRefused(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		var sysErr *os.SyscallError
+		if errors.As(opErr.Err, &sysErr) {
+			return sysErr.Syscall == "connect" && errors.Is(sysErr.Err, syscall.ECONNREFUSED)
+		}
+	}
+	return false
 }
 
 // sendGarbageConnect simulates a failed modem negotiation by sending CONNECT
