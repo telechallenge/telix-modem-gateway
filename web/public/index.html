@@ -37,6 +37,9 @@
           <div class="modem-led" data-led="cs"><span class="modem-led-label">CS</span><span class="modem-led-light"></span></div>
           <div class="modem-led" data-led="arq"><span class="modem-led-label">ARQ</span><span class="modem-led-light"></span></div>
         </div>
+        <button class="modem-mute" id="muteBtn" title="Toggle modem sounds">
+          <span class="modem-mute-icon" id="muteIcon">&#x1F50A;</span>
+        </button>
         <div class="modem-brand">
           <span class="modem-brand-name">USPhonecs</span>
           <span class="modem-brand-model">Courier</span>
@@ -46,6 +49,7 @@
   </div>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
+  <script src="js/modem-audio.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

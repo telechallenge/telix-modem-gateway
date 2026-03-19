@@ -71,20 +71,34 @@ func buildBanner(version string) string {
 		return s
 	}
 
+	// center centers s within n columns
+	center := func(s string, n int) string {
+		gap := n - len(s)
+		if gap <= 0 {
+			return s
+		}
+		return strings.Repeat(" ", gap/2) + s
+	}
+
 	row := func(color, text string) string {
 		return V + color + pad(text, 77) + cyan + V + "\r\n"
 	}
 
+	// Logo block is 39 chars wide; left offset = (77-39)/2 = 19
+	// T crossbar line has 0 relative indent, stem lines have 3 relative indent
+	o := strings.Repeat(" ", 19) // logo offset
+	s := o + "   "               // stem offset (3 extra for T stem alignment)
+
 	return cls + cyan +
 		TL + bar + TR + "\r\n" +
-		row(yellow, "      "+B+B+B+B+B+B+B+B+"  "+B+B+B+B+B+B+B+"  "+B+B+"       "+B+B+"  "+B+B+"   "+B+B) +
-		row(yellow, "         "+B+B+"     "+B+B+"       "+B+B+"       "+B+B+"   "+B+B+" "+B+B) +
-		row(yellow, "         "+B+B+"     "+B+B+B+B+B+"    "+B+B+"       "+B+B+"    "+B+B+B) +
-		row(yellow, "         "+B+B+"     "+B+B+"       "+B+B+"       "+B+B+"   "+B+B+" "+B+B) +
-		row(yellow, "         "+B+B+"     "+B+B+B+B+B+B+B+"  "+B+B+B+B+B+B+B+"  "+B+B+"  "+B+B+"   "+B+B) +
+		row(yellow, o+B+B+B+B+B+B+B+B+"  "+B+B+B+B+B+B+B+"  "+B+B+"       "+B+B+"  "+B+B+"   "+B+B) +
+		row(yellow, s+B+B+"     "+B+B+"       "+B+B+"       "+B+B+"   "+B+B+" "+B+B) +
+		row(yellow, s+B+B+"     "+B+B+B+B+B+"    "+B+B+"       "+B+B+"    "+B+B+B) +
+		row(yellow, s+B+B+"     "+B+B+"       "+B+B+"       "+B+B+"   "+B+B+" "+B+B) +
+		row(yellow, s+B+B+"     "+B+B+B+B+B+B+B+"  "+B+B+B+B+B+B+B+"  "+B+B+"  "+B+B+"   "+B+B) +
 		row("", "") +
-		row(white, "                   Telix Modem Gateway v"+version) +
-		row(grey, "                    Hayes Compatible 56000 BPS") +
+		row(white, center("Telix Modem Gateway v"+version, 77)) +
+		row(grey, center("Hayes Compatible 56000 BPS", 77)) +
 		row("", "") +
 		ML + bar + MR + "\r\n" +
 		row(green, "  Ready to receive commands. Type AT to test, ATDT<number> to dial.") +

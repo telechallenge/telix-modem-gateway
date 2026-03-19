@@ -215,6 +215,7 @@ const (
 	ResultRing      ResultCode = 2
 	ResultNoCarrier ResultCode = 3
 	ResultError     ResultCode = 4
+	ResultBusy      ResultCode = 7
 	ResultNoAnswer  ResultCode = 8
 )
 
@@ -230,6 +231,8 @@ func (r ResultCode) String() string {
 		return "NO CARRIER"
 	case ResultError:
 		return "ERROR"
+	case ResultBusy:
+		return "BUSY"
 	case ResultNoAnswer:
 		return "NO ANSWER"
 	default:

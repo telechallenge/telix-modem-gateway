@@ -1,6 +1,11 @@
 package server
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"syscall"
 	"testing"
 
 	"telix/internal/config"
@@ -165,5 +170,57 @@ func TestCheckRequiredSettings_AllRequired_AllCorrect(t *testing.T) {
 	}
 	if !s.checkRequiredSettings("555-1212", entry) {
 		t.Error("expected true when all settings match")
+	}
+}
+
+func TestIsConnectionRefused(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name: "connection refused",
+			err: &net.OpError{
+				Op:  "dial",
+				Net: "tcp",
+				Err: &os.SyscallError{
+					Syscall: "connect",
+					Err:     syscall.ECONNREFUSED,
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "connection timeout",
+			err: &net.OpError{
+				Op:  "dial",
+				Net: "tcp",
+				Err: &os.SyscallError{
+					Syscall: "connect",
+					Err:     syscall.ETIMEDOUT,
+				},
+			},
+			expected: false,
+		},
+		{
+			name:     "generic error",
+			err:      fmt.Errorf("some error"),
+			expected: false,
+		},
+		{
+			name:     "nil-safe wrapped error",
+			err:      errors.New("connection failed"),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isConnectionRefused(tt.err)
+			if result != tt.expected {
+				t.Errorf("isConnectionRefused(%v) = %v, want %v", tt.err, result, tt.expected)
+			}
+		})
 	}
 }

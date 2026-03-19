@@ -86,6 +86,7 @@ func TestResultCodeString(t *testing.T) {
 		{ResultRing, "RING"},
 		{ResultNoCarrier, "NO CARRIER"},
 		{ResultError, "ERROR"},
+		{ResultBusy, "BUSY"},
 		{ResultNoAnswer, "NO ANSWER"},
 	}
 
