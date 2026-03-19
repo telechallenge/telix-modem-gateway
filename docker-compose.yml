@@ -27,7 +27,7 @@ services:
         max-file: "3"
 
   fail2ban:
-    image: crazymax/fail2ban:1.1.0-r3
+    image: crazymax/fail2ban:1.1.0
     container_name: telix-fail2ban
     restart: unless-stopped
     network_mode: host
