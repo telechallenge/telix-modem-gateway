@@ -48,6 +48,28 @@ services:
         max-size: "50m"
         max-file: "3"
 
+  telix-web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: telix-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - TELIX_HOST=telix
+      - TELIX_PORT=2323
+    networks:
+      - telix-net
+    depends_on:
+      telix:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
 volumes:
   telix-logs:
   fail2ban-data:

@@ -29,19 +29,29 @@ const (
 
 // Dialer handles outbound connections
 type Dialer struct {
-	timeout time.Duration
+	timeout         time.Duration
+	allowedNetworks []*net.IPNet
 }
 
-// New creates a new dialer
-func New(timeout time.Duration) *Dialer {
+// New creates a new dialer. If allowedNetworks is non-empty, resolved IPs
+// must fall within at least one CIDR or the dial is rejected.
+func New(timeout time.Duration, allowedNetworks []*net.IPNet) *Dialer {
 	return &Dialer{
-		timeout: timeout,
+		timeout:         timeout,
+		allowedNetworks: allowedNetworks,
 	}
 }
 
-// Dial connects to a remote host with telnet negotiation
+// Dial connects to a remote host with telnet negotiation.
+// If allowed networks are configured, the resolved IP is checked first.
 func (d *Dialer) Dial(host string, port int) (net.Conn, error) {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+
+	if len(d.allowedNetworks) > 0 {
+		if err := d.checkAllowed(host); err != nil {
+			return nil, err
+		}
+	}
 
 	conn, err := net.DialTimeout("tcp", addr, d.timeout)
 	if err != nil {
@@ -52,6 +62,39 @@ func (d *Dialer) Dial(host string, port int) (net.Conn, error) {
 	d.negotiate(conn)
 
 	return conn, nil
+}
+
+// checkAllowed resolves the host and verifies all IPs are within allowed networks.
+func (d *Dialer) checkAllowed(host string) error {
+	// If host is already an IP, parse directly
+	if ip := net.ParseIP(host); ip != nil {
+		if !d.ipAllowed(ip) {
+			return fmt.Errorf("dial rejected: %s is not in allowed networks", host)
+		}
+		return nil
+	}
+
+	// Resolve hostname
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("dial rejected: cannot resolve %s: %w", host, err)
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil || !d.ipAllowed(ip) {
+			return fmt.Errorf("dial rejected: %s resolved to %s which is not in allowed networks", host, ipStr)
+		}
+	}
+	return nil
+}
+
+func (d *Dialer) ipAllowed(ip net.IP) bool {
+	for _, n := range d.allowedNetworks {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // negotiate performs telnet option negotiation including terminal type and window size
@@ -79,9 +122,9 @@ func (d *Dialer) negotiate(conn net.Conn) {
 
 // TelnetFilter filters telnet commands from data stream
 type TelnetFilter struct {
-	state    filterState
-	command  byte
-	optData  []byte
+	state   filterState
+	command byte
+	optData []byte
 }
 
 type filterState int

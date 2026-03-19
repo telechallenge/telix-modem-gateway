@@ -150,10 +150,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	s.logger.NewConnection(host)
-
 	// Create session
 	sess := NewSession(conn, s.config, s.logger)
+	sess.logger.NewConnection()
 
 	s.mu.Lock()
 	s.sessions[conn] = sess
@@ -168,5 +167,5 @@ func (s *Server) handleConnection(conn net.Conn) {
 	s.mu.Unlock()
 
 	s.connTracker.Remove(host)
-	s.logger.Disconnected(host)
+	sess.logger.Disconnected()
 }

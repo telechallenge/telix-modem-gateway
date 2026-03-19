@@ -1,0 +1,34 @@
+@font-face {
+  font-family: 'PxPlus IBM VGA 8x16';
+  src: url('../fonts/PxPlus_IBM_VGA8.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+#terminal {
+  width: 100%;
+  height: 100%;
+}
+
+/* Hide any scrollbars xterm might show */
+.xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.xterm-viewport {
+  scrollbar-width: none;
+}

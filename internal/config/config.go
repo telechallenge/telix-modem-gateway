@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -13,6 +14,18 @@ type Config struct {
 	Logging   LoggingConfig    `yaml:"logging"`
 	Phonebook []PhonebookEntry `yaml:"phonebook"`
 	RateLimit RateLimitConfig  `yaml:"rate_limit"`
+	Dialer    DialerConfig     `yaml:"dialer"`
+	Version   string           `yaml:"-"` // Set at runtime, not from YAML
+}
+
+type DialerConfig struct {
+	AllowedNetworks []string `yaml:"allowed_networks"` // CIDRs like "10.0.0.0/8"
+	parsedNetworks  []*net.IPNet
+}
+
+// ParsedNetworks returns the parsed CIDR networks. Call after Load().
+func (d *DialerConfig) ParsedNetworks() []*net.IPNet {
+	return d.parsedNetworks
 }
 
 type ServerConfig struct {
@@ -109,6 +122,15 @@ func Load(path string) (*Config, error) {
 		if cfg.Phonebook[i].RequiredSettings.Compression == nil {
 			cfg.Phonebook[i].RequiredSettings.Compression = boolPtr(true)
 		}
+	}
+
+	// Parse allowed_networks CIDRs
+	for _, cidr := range cfg.Dialer.AllowedNetworks {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("dialer.allowed_networks: invalid CIDR %q: %w", cidr, err)
+		}
+		cfg.Dialer.parsedNetworks = append(cfg.Dialer.parsedNetworks, ipNet)
 	}
 
 	if err := cfg.validate(); err != nil {
