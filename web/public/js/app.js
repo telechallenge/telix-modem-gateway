@@ -22,8 +22,6 @@ document.addEventListener('DOMContentLoaded', () => {
     cursor:        '#AAAAAA',
   };
 
-  const fitAddon = new FitAddon.FitAddon();
-
   const term = new Terminal({
     fontFamily: "'PxPlus IBM VGA 8x16', monospace",
     fontSize: 16,
@@ -37,8 +35,6 @@ document.addEventListener('DOMContentLoaded', () => {
     convertEol: false,
   });
 
-  term.loadAddon(fitAddon);
-
   // Try WebGL renderer, fall back to canvas
   try {
     const webglAddon = new WebglAddon.WebglAddon();
@@ -51,7 +47,48 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   term.open(document.getElementById('terminal'));
-  fitAddon.fit();
+
+  // --- Modem LED panel ---
+  const leds = {};
+  document.querySelectorAll('.modem-led').forEach(el => {
+    leds[el.dataset.led] = el;
+  });
+
+  function ledOn(name) {
+    if (leds[name]) leds[name].classList.add('on');
+  }
+
+  function ledOff(name) {
+    if (leds[name]) leds[name].classList.remove('on', 'active');
+  }
+
+  function flashLed(name) {
+    const el = leds[name];
+    if (!el) return;
+    el.classList.add('active');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('active'), 80);
+  }
+
+  let modemConnected = false;
+
+  function setConnected(on) {
+    modemConnected = on;
+    ['hs', 'cd', 'oh', 'cs', 'arq'].forEach(n => on ? ledOn(n) : ledOff(n));
+  }
+
+  function checkModemState(text) {
+    if (/CONNECT\b/.test(text)) {
+      setConnected(true);
+    } else if (/NO CARRIER|BUSY|NO ANSWER|NO DIALTONE/.test(text)) {
+      setConnected(false);
+    } else if (/RING/.test(text)) {
+      ledOn('oh');
+    }
+  }
+
+  // Modem power on
+  ledOn('mr');
 
   // WebSocket connection
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -59,19 +96,30 @@ document.addEventListener('DOMContentLoaded', () => {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
+    ledOn('tr');
+    ledOn('aa');
     sendResize();
   };
 
   ws.onmessage = (event) => {
     if (typeof event.data === 'string') {
       term.write(event.data);
+      checkModemState(event.data);
     } else {
-      term.write(new Uint8Array(event.data));
+      const bytes = new Uint8Array(event.data);
+      term.write(bytes);
+      if (bytes.length < 200) {
+        checkModemState(new TextDecoder().decode(bytes));
+      }
     }
+    flashLed('rd');
   };
 
-  ws.onclose = (event) => {
+  ws.onclose = () => {
     term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
+    ledOff('tr');
+    ledOff('aa');
+    setConnected(false);
   };
 
   ws.onerror = () => {
@@ -82,10 +130,11 @@ document.addEventListener('DOMContentLoaded', () => {
   term.onData((data) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(data);
+      flashLed('sd');
     }
   });
 
-  // Send resize notifications
+  // Send terminal dimensions to server
   function sendResize() {
     if (ws.readyState === WebSocket.OPEN) {
       const cols = term.cols;
@@ -99,13 +148,4 @@ document.addEventListener('DOMContentLoaded', () => {
       ws.send(buf.buffer);
     }
   }
-
-  window.addEventListener('resize', () => {
-    fitAddon.fit();
-    sendResize();
-  });
-
-  term.onResize(() => {
-    sendResize();
-  });
 });

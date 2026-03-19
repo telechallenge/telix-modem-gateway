@@ -8,9 +8,43 @@
   <link rel="stylesheet" href="css/terminal.css">
 </head>
 <body>
-  <div id="terminal"></div>
+  <div class="crt-container">
+    <div class="crt-monitor">
+      <div class="crt-screen">
+        <div id="terminal"></div>
+        <div class="crt-scanlines"></div>
+        <div class="crt-glass"></div>
+      </div>
+      <div class="crt-chin">
+        <div class="crt-led"></div>
+        <span class="crt-brand">TeleTerm</span>
+      </div>
+    </div>
+    <div class="crt-stand-neck"></div>
+    <div class="crt-stand-base"></div>
+    <div class="modem">
+      <div class="modem-top"></div>
+      <div class="modem-front">
+        <div class="modem-leds">
+          <div class="modem-led" data-led="hs"><span class="modem-led-label">HS</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="aa"><span class="modem-led-label">AA</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="cd"><span class="modem-led-label">CD</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="oh"><span class="modem-led-label">OH</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="rd"><span class="modem-led-label">RD</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="sd"><span class="modem-led-label">SD</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="tr"><span class="modem-led-label">TR</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="mr"><span class="modem-led-label">MR</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="cs"><span class="modem-led-label">CS</span><span class="modem-led-light"></span></div>
+          <div class="modem-led" data-led="arq"><span class="modem-led-label">ARQ</span><span class="modem-led-light"></span></div>
+        </div>
+        <div class="modem-brand">
+          <span class="modem-brand-name">USPhonecs</span>
+          <span class="modem-brand-model">Courier</span>
+        </div>
+      </div>
+    </div>
+  </div>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
   <script src="js/app.js"></script>
 </body>
