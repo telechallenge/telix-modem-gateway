@@ -24,8 +24,8 @@ RUN addgroup -g 1000 telix && \
     adduser -u 1000 -G telix -s /bin/sh -D telix
 
 # Create directories
-RUN mkdir -p /var/log/telix /etc/telix && \
-    chown -R telix:telix /var/log/telix /etc/telix
+RUN mkdir -p /app/logs /etc/telix && \
+    chown -R telix:telix /app/logs /etc/telix
 
 WORKDIR /app
 

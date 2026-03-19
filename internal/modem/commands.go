@@ -32,6 +32,7 @@ const (
 	CmdSetErrorCorrection             // AT&Q0, AT&Q5
 	CmdSetCompression                 // AT%C0, AT%C1
 	CmdOnline                         // ATO — return to data mode
+	CmdClear                          // ATCLS — clear screen and redraw banner
 )
 
 // Command represents a parsed AT command
@@ -119,6 +120,9 @@ func ParseCommand(input string) *Command {
 		return cmd
 	case "AT&V":
 		cmd.Type = CmdViewConfig
+		return cmd
+	case "ATCLS":
+		cmd.Type = CmdClear
 		return cmd
 	case "ATX0", "ATX1", "ATX2", "ATX3", "ATX4":
 		cmd.Type = CmdSetX

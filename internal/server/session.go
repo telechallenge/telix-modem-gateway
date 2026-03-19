@@ -300,7 +300,7 @@ func (s *Session) commandLoop() {
 }
 
 const maxLineLength = 1024
-const commandTimeout = 30 * time.Second
+const commandTimeout = 5 * time.Minute
 
 func (s *Session) readLine(reader *bufio.Reader) (string, error) {
 	var line bytes.Buffer
@@ -327,8 +327,8 @@ func (s *Session) readLine(reader *bufio.Reader) (string, error) {
 			return line.String(), nil
 		}
 
-		// Handle backspace
-		if b == bs {
+		// Handle backspace (S5 register) and DEL (0x7F, sent by most modern terminals)
+		if b == bs || b == 0x7F {
 			if line.Len() > 0 {
 				data := line.Bytes()
 				line.Reset()
@@ -375,6 +375,13 @@ func (s *Session) processCommand(input string) {
 	// Handle dial command specially
 	if cmd.Type == modem.CmdDial {
 		s.handleDial(cmd.Number)
+		return
+	}
+
+	// Handle ATCLS (clear screen and redraw banner)
+	if cmd.Type == modem.CmdClear {
+		s.writeClient([]byte(s.banner))
+		s.sendResult(modem.ResultOK)
 		return
 	}
 

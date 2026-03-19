@@ -5,7 +5,7 @@
 enabled = true
 port = 2323
 filter = telix
-logpath = /var/log/telix/telix.log
+logpath = /app/logs/telix.log
 maxretry = 5
 bantime = 7200
 findtime = 900
