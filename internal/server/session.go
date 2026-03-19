@@ -77,11 +77,11 @@ func buildBanner(version string) string {
 
 	return cls + cyan +
 		TL + bar + TR + "\r\n" +
-		row(yellow, "      "+B+B+B+B+B+B+B+B+" "+B+B+B+B+B+B+B+" "+B+B+"     "+B+B+" "+B+B+"  "+B+B) +
-		row(yellow, "         "+B+B+"   "+B+B+"     "+B+B+"     "+B+B+"  "+B+B+" "+B+B) +
-		row(yellow, "         "+B+B+"   "+B+B+B+B+B+"  "+B+B+"     "+B+B+"   "+B+B+B) +
-		row(yellow, "         "+B+B+"   "+B+B+"     "+B+B+"     "+B+B+"  "+B+B+" "+B+B) +
-		row(yellow, "         "+B+B+"   "+B+B+B+B+B+B+B+" "+B+B+B+B+B+B+B+" "+B+B+" "+B+B+"  "+B+B) +
+		row(yellow, "      "+B+B+B+B+B+B+B+B+"  "+B+B+B+B+B+B+B+"  "+B+B+"       "+B+B+"  "+B+B+"   "+B+B) +
+		row(yellow, "         "+B+B+"     "+B+B+"       "+B+B+"       "+B+B+"   "+B+B+" "+B+B) +
+		row(yellow, "         "+B+B+"     "+B+B+B+B+B+"    "+B+B+"       "+B+B+"    "+B+B+B) +
+		row(yellow, "         "+B+B+"     "+B+B+"       "+B+B+"       "+B+B+"   "+B+B+" "+B+B) +
+		row(yellow, "         "+B+B+"     "+B+B+B+B+B+B+B+"  "+B+B+B+B+B+B+B+"  "+B+B+"  "+B+B+"   "+B+B) +
 		row("", "") +
 		row(white, "                   Telix Modem Gateway v"+version) +
 		row(grey, "                    Hayes Compatible 56000 BPS") +
