@@ -34,11 +34,11 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
-    entrypoint: ["/bin/sh", "-c", "mkdir -p /data/log && touch /data/log/fail2ban.log && exec /entrypoint.sh"]
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /data/log && touch /data/log/fail2ban.log && exec /entrypoint.sh fail2ban-server -f -x -v start"]
     volumes:
       - ./fail2ban/telix.conf:/etc/fail2ban/filter.d/telix.conf:ro
-      - ./fail2ban/jail.local:/etc/fail2ban/jail.d/telix.local:ro
-      - ./fail2ban/recidive.local:/etc/fail2ban/jail.d/recidive.local:ro
+      - ./fail2ban/jail.local:/data/jail.d/telix.local:ro
+      - ./fail2ban/recidive.local:/data/jail.d/recidive.local:ro
       - telix-logs:/var/log/telix:ro
       - fail2ban-data:/data
     depends_on:
