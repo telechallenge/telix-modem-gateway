@@ -11,7 +11,7 @@ services:
       - "2323:2323"
     volumes:
       - ./configs/telix.yaml:/etc/telix/telix.yaml:ro
-      - telix-logs:/var/log/telix
+      - telix-logs:/app/logs
     networks:
       - telix-net
     healthcheck:
@@ -39,10 +39,11 @@ services:
       - ./fail2ban/telix.conf:/etc/fail2ban/filter.d/telix.conf:ro
       - ./fail2ban/jail.local:/data/jail.d/telix.local:ro
       - ./fail2ban/recidive.local:/data/jail.d/recidive.local:ro
-      - telix-logs:/var/log/telix:ro
+      - telix-logs:/app/logs:ro
       - fail2ban-data:/data
     depends_on:
-      - telix
+      telix:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:

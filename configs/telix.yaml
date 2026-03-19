@@ -7,7 +7,7 @@ server:
 logging:
   level: info
   format: json
-  file: /var/log/telix/telix.log
+  file: ./logs/telix.log
 
 phonebook:
   - number: "916-555-1212"
@@ -47,6 +47,7 @@ dialer:
     - "172.16.0.0/12"
     - "192.168.0.0/16"
     - "127.0.0.0/8"
+    - "64.13.139.230/32"
 
 rate_limit:
   enabled: true

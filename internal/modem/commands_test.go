@@ -25,6 +25,8 @@ func TestParseCommand(t *testing.T) {
 		{"AT&V", CmdViewConfig},
 		{"ATO", CmdOnline},
 		{"ATO0", CmdOnline},
+		{"ATCLS", CmdClear},
+		{"atcls", CmdClear},
 		{"ATDT916-555-1212", CmdDial},
 		{"ATDP415-555-0100", CmdDial},
 		{"ATS0=1", CmdSRegisterSet},
