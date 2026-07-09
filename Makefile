@@ -42,3 +42,7 @@ web-install:
 
 web-dev:
 	cd web && npm run dev
+
+.PHONY: web-test
+web-test:
+	cd web && npm test

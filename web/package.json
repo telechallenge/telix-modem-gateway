@@ -5,7 +5,8 @@
   "description": "Web terminal client for Telix modem emulator",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test test/*.js"
   },
   "dependencies": {
     "express": "^4.21.0",
