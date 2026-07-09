@@ -59,3 +59,50 @@ test('WebSocket receives backend bytes as binary frames (not text)', async () =>
     ws.close();
   });
 });
+
+test('outbound 0xFF from browser is escaped to 0xFF 0xFF before reaching backend', async () => {
+  await withProxy(async ({ wsPort, backendConns }) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${wsPort}/ws`);
+    await new Promise(r => ws.on('open', r));
+    while (backendConns.length === 0) await new Promise(r => setTimeout(r, 10));
+    const backend = backendConns[0];
+
+    const received = new Promise(resolve => {
+      const chunks = [];
+      backend.on('data', d => {
+        chunks.push(d);
+        const total = Buffer.concat(chunks);
+        if (total.length >= 4) resolve(total);
+      });
+    });
+
+    // Send bytes containing an IAC (0xFF) as raw binary WS payload.
+    ws.send(Buffer.from([0x41, 0xFF, 0x42])); // "A", IAC, "B"
+
+    const got = await received;
+    assert.deepStrictEqual(
+      [...got.subarray(0, 4)],
+      [0x41, 0xFF, 0xFF, 0x42],
+      'IAC should be doubled'
+    );
+    ws.close();
+  });
+});
+
+test('outbound bytes without 0xFF pass through unchanged', async () => {
+  await withProxy(async ({ wsPort, backendConns }) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${wsPort}/ws`);
+    await new Promise(r => ws.on('open', r));
+    while (backendConns.length === 0) await new Promise(r => setTimeout(r, 10));
+    const backend = backendConns[0];
+
+    const received = new Promise(resolve => {
+      backend.on('data', d => resolve(d));
+    });
+
+    ws.send(Buffer.from('hello'));
+    const got = await received;
+    assert.deepStrictEqual([...got], [...Buffer.from('hello')]);
+    ws.close();
+  });
+});

@@ -14,6 +14,22 @@ const SB   = 250;
 const SE   = 240;
 const NAWS = 31;
 
+// IAC-escape bytes for outbound telnet: 0xFF must be doubled per RFC 854.
+// Runs on all browser→Go bytes (not just during ZMODEM) so we can never send an
+// accidental unescaped IAC. Cost is O(n); zero allocation when no 0xFF present.
+function escapeIAC(buf) {
+  let hits = 0;
+  for (let i = 0; i < buf.length; i++) if (buf[i] === IAC) hits++;
+  if (hits === 0) return buf;
+  const out = Buffer.allocUnsafe(buf.length + hits);
+  let j = 0;
+  for (let i = 0; i < buf.length; i++) {
+    out[j++] = buf[i];
+    if (buf[i] === IAC) out[j++] = IAC;
+  }
+  return out;
+}
+
 // --- Per-IP connection limiting ---
 const MAX_WS_PER_IP = parseInt(process.env.MAX_WS_PER_IP || '5', 10);
 const ipConnections = new Map(); // ip -> count
@@ -63,21 +79,19 @@ wss.on('connection', (ws, req) => {
 
   // Data from browser → Telix
   ws.on('message', (data, isBinary) => {
-    if (isBinary && data.length >= 3 && data[0] === 0x00) {
+    if (isBinary && data.length >= 5 && data[0] === 0x00) {
       // Resize message: 0x00 + cols(uint16 BE) + rows(uint16 BE)
       const cols = (data[1] << 8) | data[2];
       const rows = (data[3] << 8) | data[4];
-      // Send NAWS subnegotiation to Telix
       const naws = Buffer.from([
         IAC, SB, NAWS,
         (cols >> 8) & 0xFF, cols & 0xFF,
         (rows >> 8) & 0xFF, rows & 0xFF,
         IAC, SE,
       ]);
-      tcp.write(naws);
+      tcp.write(naws); // NAWS is proxy-constructed and correctly formed; do not re-escape.
     } else {
-      // Regular keystrokes — pass through as raw bytes
-      tcp.write(data);
+      tcp.write(escapeIAC(Buffer.isBuffer(data) ? data : Buffer.from(data)));
     }
   });
 
