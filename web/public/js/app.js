@@ -113,6 +113,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   ws.binaryType = 'arraybuffer';
 
+  let bridge = null;
+  let config = { maxUploadBytes: 1073741824, zmodemTimeoutSec: 30 };
+
+  fetch('/config.json')
+    .then(r => r.json())
+    .then(c => { config = c; })
+    .catch(() => { /* use defaults */ });
+
   ws.onopen = () => {
     ledOn('tr');
     ledOn('aa');
@@ -120,17 +128,18 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   ws.onmessage = (event) => {
-    if (typeof event.data === 'string') {
-      term.write(event.data);
-      checkModemState(event.data);
-    } else {
-      const bytes = new Uint8Array(event.data);
-      term.write(bytes);
-      if (bytes.length < 200) {
-        checkModemState(new TextDecoder().decode(bytes));
-      }
+    if (!(event.data instanceof ArrayBuffer)) {
+      // ws.binaryType is 'arraybuffer' (see above); anything else means a bug
+      // upstream or a broken environment. Loud failure beats silent reordering.
+      console.error('WebSocket delivered non-binary frame; dropping', typeof event.data);
+      return;
     }
-    flashLed('rd');
+    if (!bridge) {
+      bridge = window.ZmodemSentry.createZmodemBridge({
+        ws, term, config, checkModemState, flashLed,
+      });
+    }
+    bridge.consume(new Uint8Array(event.data));
   };
 
   ws.onclose = () => {
@@ -148,22 +157,35 @@ document.addEventListener('DOMContentLoaded', () => {
   // Send keystrokes to server
   let cmdBuffer = '';
   term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
-      flashLed('sd');
-      ModemAudio.initOnGesture();
+    if (ws.readyState !== WebSocket.OPEN) return;
 
-      // Buffer keystrokes to detect ATD commands
-      for (const ch of data) {
-        if (ch === '\r' || ch === '\n') {
-          const match = cmdBuffer.match(/^ATD[TP]([0-9\-\(\)\.\*# ]+)$/i);
-          if (match) ModemAudio.dialNumber(match[1].replace(/[-().\s]/g, ''));
-          cmdBuffer = '';
-        } else if (ch === '\x08' || ch === '\x7F') {
-          cmdBuffer = cmdBuffer.slice(0, -1);
-        } else {
-          cmdBuffer += ch;
-        }
+    // During an active ZMODEM session, only pass through Ctrl-X (CAN, 0x18)
+    // so the user can still trigger the standard ZMODEM cancel sequence
+    // (Ctrl-X × 5). All other keystrokes would interleave with the transfer
+    // stream and corrupt it.
+    if (bridge && bridge.isActive()) {
+      const canOnly = [...data].filter(ch => ch === '\x18').join('');
+      if (canOnly.length > 0) {
+        ws.send(canOnly);
+        flashLed('sd');
+      }
+      return;
+    }
+
+    ws.send(data);
+    flashLed('sd');
+    ModemAudio.initOnGesture();
+
+    // Buffer keystrokes to detect ATD commands
+    for (const ch of data) {
+      if (ch === '\r' || ch === '\n') {
+        const match = cmdBuffer.match(/^ATD[TP]([0-9\-\(\)\.\*# ]+)$/i);
+        if (match) ModemAudio.dialNumber(match[1].replace(/[-().\s]/g, ''));
+        cmdBuffer = '';
+      } else if (ch === '\x08' || ch === '\x7F') {
+        cmdBuffer = cmdBuffer.slice(0, -1);
+      } else {
+        cmdBuffer += ch;
       }
     }
   });

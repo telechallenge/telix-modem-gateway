@@ -38,6 +38,15 @@ phonebook:
       error_correction: false   # raw connection, no V.42
       compression: false        # no V.42bis
 
+  # Example: number gated by a password. The user is prompted for the
+  # password (shadow-echoed as '*') after dial tone; wrong password ->
+  # NO CARRIER without ever touching the remote host.
+  # - number: "555-0199"
+  #   host: "private.example.com"
+  #   port: 23
+  #   name: "Private BBS"
+  #   password: "swordfish"
+
 dialer:
   # Restrict outbound connections to these networks.
   # If set, phonebook hosts must resolve to IPs within these CIDRs.

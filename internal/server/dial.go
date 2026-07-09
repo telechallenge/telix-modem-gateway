@@ -2,6 +2,7 @@ package server
 
 import (
 	cryptoRand "crypto/rand"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -44,6 +45,14 @@ func (s *Session) handleDial(number string) {
 		s.sendRings()
 		s.sendGarbageConnect()
 		return
+	}
+
+	// If the entry requires a password, prompt for it before dialing.
+	// One attempt only — wrong password terminates the dial with NO CARRIER.
+	if entry.Password != "" {
+		if !s.promptPassword(number, entry.Password) {
+			return
+		}
 	}
 
 	// Attempt connection while ringing
@@ -127,6 +136,39 @@ func (s *Session) handleDial(number string) {
 	s.modem.SetState(modem.StateData)
 	s.logger.ConnectionAttempt(number, "success")
 	s.sendConnect(entry.RequiredSettings.Baud)
+}
+
+// promptPassword prompts the client for a password, shadow-echoing '*' per
+// character. Returns true if the entered password matches want. On mismatch
+// (or read error) the terminal receives NO CARRIER and the function returns
+// false — the dial is aborted.
+func (s *Session) promptPassword(number, want string) bool {
+	cr := s.modem.Registers().GetCR()
+	lf := s.modem.Registers().GetLF()
+
+	if _, err := s.writeClient([]byte(fmt.Sprintf("%c%cPASSWORD: ", cr, lf))); err != nil {
+		return false
+	}
+
+	if s.reader == nil {
+		// Should not happen in normal operation (commandLoop always sets it),
+		// but guard for tests that call handleDial directly.
+		s.sendResult(modem.ResultNoCarrier)
+		return false
+	}
+
+	got, err := s.readPassword(s.reader)
+	if err != nil {
+		s.sendResult(modem.ResultNoCarrier)
+		return false
+	}
+
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		s.logger.ConnectionAttempt(number, "auth_failed")
+		s.sendResult(modem.ResultNoCarrier)
+		return false
+	}
+	return true
 }
 
 // checkRequiredSettings validates modem settings against phonebook entry requirements.

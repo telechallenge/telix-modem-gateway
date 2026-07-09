@@ -59,6 +59,7 @@ type PhonebookEntry struct {
 	Host             string           `yaml:"host"`
 	Port             int              `yaml:"port"`
 	Name             string           `yaml:"name"`
+	Password         string           `yaml:"password,omitempty"`
 	RequiredInit     string           `yaml:"required_init,omitempty"` // deprecated, use required_settings.init
 	RequiredSettings RequiredSettings `yaml:"required_settings,omitempty"`
 }

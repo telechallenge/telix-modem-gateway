@@ -89,6 +89,49 @@ rate_limit:
 	}
 }
 
+func TestLoadConfigWithPassword(t *testing.T) {
+	yaml := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 23
+    name: "Locked BBS"
+    password: "swordfish"
+
+  - number: "916-555-1213"
+    host: "127.0.0.1"
+    port: 23
+    name: "Open BBS"
+`
+	tmpfile, err := os.CreateTemp("", "config*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.WriteString(yaml); err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	cfg, err := Load(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if got := cfg.Phonebook[0].Password; got != "swordfish" {
+		t.Errorf("Phonebook[0].Password = %q, want %q", got, "swordfish")
+	}
+	if got := cfg.Phonebook[1].Password; got != "" {
+		t.Errorf("Phonebook[1].Password = %q, want empty", got)
+	}
+}
+
 func TestLoadConfigWithRequiredSettings(t *testing.T) {
 	yaml := `
 server:
