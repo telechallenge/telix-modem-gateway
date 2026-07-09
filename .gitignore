@@ -1,4 +1,5 @@
 log/
 /telix
 web/node_modules/
+web/.playwright-cli/
 coverage.out
