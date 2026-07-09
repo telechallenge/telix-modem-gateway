@@ -46,3 +46,7 @@ web-dev:
 .PHONY: web-test
 web-test:
 	cd web && npm test
+
+.PHONY: web-e2e
+web-e2e:
+	cd web && npm run e2e
