@@ -281,3 +281,124 @@ html, body {
     transform: scale(0.75);
   }
 }
+
+/* -------- Transfer status strip (LCD panel style) -------- */
+
+.modem-xfer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: #001100;
+  color: #55ff55;
+  font-family: 'PxPlus IBM VGA 8x16', monospace;
+  font-size: 12px;
+  border: 1px solid #003300;
+  border-radius: 3px;
+  box-shadow: inset 0 0 8px rgba(85, 255, 85, 0.15);
+  text-shadow: 0 0 3px rgba(85, 255, 85, 0.4);
+  min-width: 380px;
+}
+
+.modem-xfer[hidden] {
+  display: none;
+}
+
+.modem-xfer-dir {
+  font-weight: bold;
+  color: #ffff55;
+}
+
+.modem-xfer-name {
+  flex: 1;
+  min-width: 80px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modem-xfer-pct {
+  min-width: 3ch;
+  text-align: right;
+}
+
+.modem-xfer-bar {
+  position: relative;
+  display: inline-block;
+  width: 120px;
+  height: 10px;
+  background: #003300;
+  border: 1px solid #005500;
+}
+
+.modem-xfer-fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  background: #55ff55;
+  transition: width 120ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modem-xfer-fill { transition: none; }
+}
+
+.modem-xfer-cps { min-width: 8ch; }
+.modem-xfer-eta { color: #55ffff; min-width: 5ch; }
+.modem-xfer-batch { color: #aaaaaa; }
+
+.modem-xfer.state-aborted { color: #ff5555; text-shadow: 0 0 3px rgba(255, 85, 85, 0.4); }
+.modem-xfer.state-timeout { color: #ffff55; text-shadow: 0 0 3px rgba(255, 255, 85, 0.4); }
+
+/* -------- Download notification bubbles -------- */
+
+.xfer-notifications {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.xfer-notification {
+  pointer-events: auto;
+  background: #001100;
+  color: #55ff55;
+  border: 1px solid #005500;
+  padding: 8px 12px;
+  font-family: 'PxPlus IBM VGA 8x16', monospace;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 260px;
+  box-shadow: 0 0 12px rgba(85, 255, 85, 0.25);
+  animation: xfer-slide-in 220ms ease-out;
+}
+
+.xfer-notification.error { color: #ff5555; border-color: #550000; }
+
+.xfer-notification button {
+  background: #55ff55;
+  color: #000;
+  border: none;
+  padding: 4px 12px;
+  font-family: inherit;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.xfer-notification button:hover { background: #aaffaa; }
+.xfer-notification button:focus-visible { outline: 2px solid #ffff55; outline-offset: 2px; }
+
+@keyframes xfer-slide-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xfer-notification { animation: none; }
+}

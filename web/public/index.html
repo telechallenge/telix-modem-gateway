@@ -37,6 +37,15 @@
           <div class="modem-led" data-led="cs"><span class="modem-led-label">CS</span><span class="modem-led-light"></span></div>
           <div class="modem-led" data-led="arq"><span class="modem-led-label">ARQ</span><span class="modem-led-light"></span></div>
         </div>
+        <div class="modem-xfer" id="xferStrip" aria-live="polite" hidden>
+          <span class="modem-xfer-dir" id="xferDir">▶</span>
+          <span class="modem-xfer-name" id="xferName">—</span>
+          <span class="modem-xfer-pct" id="xferPct">0%</span>
+          <span class="modem-xfer-bar" id="xferBar"><span class="modem-xfer-fill" id="xferFill"></span></span>
+          <span class="modem-xfer-cps" id="xferCps">0 CPS</span>
+          <span class="modem-xfer-eta" id="xferEta">--:--</span>
+          <span class="modem-xfer-batch" id="xferBatch" hidden></span>
+        </div>
         <button class="modem-mute" id="muteBtn" title="Toggle modem sounds">
           <span class="modem-mute-icon" id="muteIcon">&#x1F50A;</span>
         </button>
@@ -47,6 +56,8 @@
       </div>
     </div>
   </div>
+  <aside class="xfer-notifications" id="xferNotifications" aria-live="polite"></aside>
+  <input type="file" id="xferUploadInput" multiple hidden />
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
   <script src="js/modem-audio.js"></script>
