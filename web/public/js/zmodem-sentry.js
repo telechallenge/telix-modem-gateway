@@ -67,6 +67,7 @@
         batchIndex++;
         const details = xfer.get_details();
         const chunks = [];
+        let overCap = false;
         currentXferBytes = 0;
         currentXferStart = performance.now();
 
@@ -79,9 +80,21 @@
         });
 
         xfer.on('input', payload => {
+          if (overCap) return;
           const buf = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
           chunks.push(buf);
           currentXferBytes += buf.length;
+          if (currentXferBytes > config.maxUploadBytes) {
+            // Malicious/misconfigured sender can OOM the tab if we accept
+            // unbounded input. Same cap as uploads keeps memory bounded.
+            overCap = true;
+            window.ZmodemUI.surfaceError(
+              `${details.name}: exceeds ${window.XferUtil.formatBytes(config.maxUploadBytes)}`
+            );
+            try { xfer.skip(); } catch (e) { /* fall through to session.abort */ }
+            try { session && session.abort(); } catch (e) { /* nop */ }
+            return;
+          }
           const elapsed = (performance.now() - currentXferStart) / 1000;
           const cps = elapsed > 0 ? currentXferBytes / elapsed : 0;
           window.ZmodemUI.updateXfer({ bytes: currentXferBytes, cps });
@@ -89,6 +102,7 @@
         });
 
         xfer.accept().then(() => {
+          if (overCap) return;
           disarmTimeout();
           window.ZmodemUI.endXfer({ status: 'done' });
           const blob = new Blob(chunks);

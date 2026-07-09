@@ -157,22 +157,35 @@ document.addEventListener('DOMContentLoaded', () => {
   // Send keystrokes to server
   let cmdBuffer = '';
   term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
-      flashLed('sd');
-      ModemAudio.initOnGesture();
+    if (ws.readyState !== WebSocket.OPEN) return;
 
-      // Buffer keystrokes to detect ATD commands
-      for (const ch of data) {
-        if (ch === '\r' || ch === '\n') {
-          const match = cmdBuffer.match(/^ATD[TP]([0-9\-\(\)\.\*# ]+)$/i);
-          if (match) ModemAudio.dialNumber(match[1].replace(/[-().\s]/g, ''));
-          cmdBuffer = '';
-        } else if (ch === '\x08' || ch === '\x7F') {
-          cmdBuffer = cmdBuffer.slice(0, -1);
-        } else {
-          cmdBuffer += ch;
-        }
+    // During an active ZMODEM session, only pass through Ctrl-X (CAN, 0x18)
+    // so the user can still trigger the standard ZMODEM cancel sequence
+    // (Ctrl-X × 5). All other keystrokes would interleave with the transfer
+    // stream and corrupt it.
+    if (bridge && bridge.isActive()) {
+      const canOnly = [...data].filter(ch => ch === '\x18').join('');
+      if (canOnly.length > 0) {
+        ws.send(canOnly);
+        flashLed('sd');
+      }
+      return;
+    }
+
+    ws.send(data);
+    flashLed('sd');
+    ModemAudio.initOnGesture();
+
+    // Buffer keystrokes to detect ATD commands
+    for (const ch of data) {
+      if (ch === '\r' || ch === '\n') {
+        const match = cmdBuffer.match(/^ATD[TP]([0-9\-\(\)\.\*# ]+)$/i);
+        if (match) ModemAudio.dialNumber(match[1].replace(/[-().\s]/g, ''));
+        cmdBuffer = '';
+      } else if (ch === '\x08' || ch === '\x7F') {
+        cmdBuffer = cmdBuffer.slice(0, -1);
+      } else {
+        cmdBuffer += ch;
       }
     }
   });
