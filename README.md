@@ -264,12 +264,45 @@ CONNECT 28800
 NO CARRIER
 ```
 
+## File Transfers (ZMODEM)
+
+The web terminal supports ZMODEM upload and download when connected to a BBS
+that offers `sz` / `rz`.
+
+### Downloading
+
+At the BBS prompt, run `sz <filename>` (or use the BBS's download menu). The
+browser detects the ZMODEM header, receives the file into memory, and shows a
+"Save" notification in the top-right corner. Click Save to trigger a standard
+browser download. Batch transfers (multiple files per session) are supported —
+each file gets its own notification.
+
+### Uploading
+
+At the BBS prompt, run `rz`. The browser detects the ZRINIT header and opens
+a file picker. Select one or more files (up to `MAX_UPLOAD_BYTES` per file,
+default 1 GB). Transfers stream directly from the browser to the BBS with no
+server-side buffering.
+
+### Configuration
+
+Environment variables on the `web/server.js` process:
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `MAX_UPLOAD_BYTES` | `1073741824` (1 GB) | Client-side upload size cap. |
+| `ZMODEM_TIMEOUT_SEC` | `30` | Session idle timeout. |
+
+### Aborting
+
+Press Ctrl-X five times to abort a transfer (standard ZMODEM cancel sequence).
+
 ## Testing
 
 ```sh
-make test
-# or
-go test ./...
+make test        # Go unit tests
+make web-test    # Node proxy + browser module unit tests
+make web-e2e     # ZMODEM end-to-end test (requires lrzsz + playwright-cli)
 ```
 
 ## License
