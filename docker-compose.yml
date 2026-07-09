@@ -77,9 +77,12 @@ services:
     container_name: telix-nginx
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/entrypoint.sh:/usr/local/bin/telix-entrypoint.sh:ro
+      - nginx-certs:/etc/nginx/certs
+    entrypoint: ["/usr/local/bin/telix-entrypoint.sh"]
     networks:
       - telix-net
     depends_on:
@@ -93,6 +96,7 @@ services:
 volumes:
   telix-logs:
   fail2ban-data:
+  nginx-certs:
 
 networks:
   telix-net:
