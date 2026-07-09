@@ -113,6 +113,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   ws.binaryType = 'arraybuffer';
 
+  let bridge = null;
+  let config = { maxUploadBytes: 1073741824, zmodemTimeoutSec: 30 };
+
+  fetch('/config.json')
+    .then(r => r.json())
+    .then(c => { config = c; })
+    .catch(() => { /* use defaults */ });
+
   ws.onopen = () => {
     ledOn('tr');
     ledOn('aa');
@@ -126,15 +134,13 @@ document.addEventListener('DOMContentLoaded', () => {
       console.error('WebSocket delivered non-binary frame; dropping', typeof event.data);
       return;
     }
-    handleBytes(new Uint8Array(event.data));
+    if (!bridge) {
+      bridge = window.ZmodemSentry.createZmodemBridge({
+        ws, term, config, checkModemState, flashLed,
+      });
+    }
+    bridge.consume(new Uint8Array(event.data));
   };
-
-  function handleBytes(bytes) {
-    const text = window.CP437.cp437ToUtf8(bytes);
-    term.write(text);
-    if (bytes.length < 200) checkModemState(text);
-    flashLed('rd');
-  }
 
   ws.onclose = () => {
     term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
