@@ -120,18 +120,21 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   ws.onmessage = (event) => {
-    if (typeof event.data === 'string') {
-      term.write(event.data);
-      checkModemState(event.data);
-    } else {
-      const bytes = new Uint8Array(event.data);
-      term.write(bytes);
-      if (bytes.length < 200) {
-        checkModemState(new TextDecoder().decode(bytes));
-      }
+    if (!(event.data instanceof ArrayBuffer)) {
+      // ws.binaryType is 'arraybuffer' (see above); anything else means a bug
+      // upstream or a broken environment. Loud failure beats silent reordering.
+      console.error('WebSocket delivered non-binary frame; dropping', typeof event.data);
+      return;
     }
-    flashLed('rd');
+    handleBytes(new Uint8Array(event.data));
   };
+
+  function handleBytes(bytes) {
+    const text = window.CP437.cp437ToUtf8(bytes);
+    term.write(text);
+    if (bytes.length < 200) checkModemState(text);
+    flashLed('rd');
+  }
 
   ws.onclose = () => {
     term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
