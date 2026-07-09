@@ -7,6 +7,8 @@ const path = require('path');
 const TELIX_HOST = process.env.TELIX_HOST || 'localhost';
 const TELIX_PORT = parseInt(process.env.TELIX_PORT || '2323', 10);
 const PORT = parseInt(process.env.PORT || '3000', 10);
+const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES || String(1024 * 1024 * 1024), 10);
+const ZMODEM_TIMEOUT_SEC = parseInt(process.env.ZMODEM_TIMEOUT_SEC || '30', 10);
 
 // --- Telnet protocol constants (only what's needed for NAWS generation) ---
 const IAC  = 255;
@@ -46,6 +48,13 @@ function getClientIP(req) {
 // --- Express + WebSocket server ---
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/config.json', (req, res) => {
+  res.json({
+    maxUploadBytes: MAX_UPLOAD_BYTES,
+    zmodemTimeoutSec: ZMODEM_TIMEOUT_SEC,
+  });
+});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });

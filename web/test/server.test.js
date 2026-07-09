@@ -106,3 +106,38 @@ test('outbound bytes without 0xFF pass through unchanged', async () => {
     ws.close();
   });
 });
+
+test('GET /config.json returns MAX_UPLOAD_BYTES and ZMODEM_TIMEOUT_SEC', async () => {
+  process.env.MAX_UPLOAD_BYTES = '2048';
+  process.env.ZMODEM_TIMEOUT_SEC = '15';
+  await withProxy(async ({ wsPort }) => {
+    const body = await new Promise((resolve, reject) => {
+      require('node:http').get(`http://127.0.0.1:${wsPort}/config.json`, res => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+      }).on('error', reject);
+    });
+    assert.strictEqual(body.status, 200);
+    assert.strictEqual(body.body.maxUploadBytes, 2048);
+    assert.strictEqual(body.body.zmodemTimeoutSec, 15);
+  });
+  delete process.env.MAX_UPLOAD_BYTES;
+  delete process.env.ZMODEM_TIMEOUT_SEC;
+});
+
+test('GET /config.json defaults: 1 GiB / 30 s', async () => {
+  delete process.env.MAX_UPLOAD_BYTES;
+  delete process.env.ZMODEM_TIMEOUT_SEC;
+  await withProxy(async ({ wsPort }) => {
+    const body = await new Promise((resolve, reject) => {
+      require('node:http').get(`http://127.0.0.1:${wsPort}/config.json`, res => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => resolve(JSON.parse(data)));
+      }).on('error', reject);
+    });
+    assert.strictEqual(body.maxUploadBytes, 1073741824);
+    assert.strictEqual(body.zmodemTimeoutSec, 30);
+  });
+});
