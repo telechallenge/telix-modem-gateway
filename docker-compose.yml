@@ -56,8 +56,8 @@ services:
       dockerfile: Dockerfile
     container_name: telix-web
     restart: unless-stopped
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     environment:
       - TELIX_HOST=telix
       - TELIX_PORT=2323
@@ -66,6 +66,24 @@ services:
     depends_on:
       telix:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: telix-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - telix-net
+    depends_on:
+      - telix-web
     logging:
       driver: "json-file"
       options:
