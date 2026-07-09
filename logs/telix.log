@@ -10,3 +10,7 @@
 {"event":"disconnected","level":"info","session_id":"80555dfa","source_ip":"::1","timestamp":"2026-03-19T20:40:14Z"}
 {"event":"shutdown_signal","level":"info","signal":"interrupt","timestamp":"2026-03-19T20:40:24Z"}
 {"event":"server_stopped","level":"info","timestamp":"2026-03-19T20:40:24Z"}
+{"event":"startup","level":"info","phonebook_entries":4,"timestamp":"2026-05-14T02:44:22Z","version":"v0.1.0-33-ge42e2a5-dirty"}
+{"event":"server_started","level":"info","port":2323,"timestamp":"2026-05-14T02:44:22Z"}
+{"event":"shutdown_signal","level":"info","signal":"interrupt","timestamp":"2026-05-14T02:45:25Z"}
+{"event":"server_stopped","level":"info","timestamp":"2026-05-14T02:45:25Z"}

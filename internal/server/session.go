@@ -123,6 +123,11 @@ type Session struct {
 	lastInput  time.Time
 	lastDial   time.Time
 
+	// reader is the single buffered reader over conn, set by commandLoop.
+	// handleDial reuses it for password prompts so byte-level buffering stays
+	// consistent with the command reader.
+	reader *bufio.Reader
+
 	done chan struct{}
 }
 
@@ -281,6 +286,7 @@ func (s *Session) readFilteredByte(reader *bufio.Reader) (byte, error) {
 
 func (s *Session) commandLoop() {
 	reader := bufio.NewReader(s.conn)
+	s.reader = reader
 	idleTimeout := time.Duration(s.config.Server.IdleTimeout) * time.Second
 	if idleTimeout == 0 {
 		idleTimeout = 300 * time.Second
@@ -373,51 +379,148 @@ func (s *Session) readLine(reader *bufio.Reader) (string, error) {
 	}
 }
 
+// readPassword reads a single line of input from the client, echoing '*'
+// for each character instead of the character itself. Backspace/DEL erases
+// the last asterisk. Modem echo setting is ignored — password entry always
+// shadow-echoes regardless of ATE0/ATE1.
+func (s *Session) readPassword(reader *bufio.Reader) (string, error) {
+	var line bytes.Buffer
+	cr := s.modem.Registers().GetCR()
+	lf := s.modem.Registers().GetLF()
+	bs := s.modem.Registers().GetBackspace()
+
+	s.conn.SetReadDeadline(time.Now().Add(commandTimeout))
+
+	for {
+		b, err := s.readFilteredByte(reader)
+		if err != nil {
+			return "", err
+		}
+
+		if b == cr || b == lf {
+			if _, err := s.writeClient([]byte{cr, lf}); err != nil {
+				return "", err
+			}
+			return line.String(), nil
+		}
+
+		if b == bs || b == 0x7F {
+			if line.Len() > 0 {
+				data := line.Bytes()
+				line.Reset()
+				line.Write(data[:len(data)-1])
+				if _, err := s.writeClient([]byte{bs, ' ', bs}); err != nil {
+					return "", err
+				}
+			}
+			continue
+		}
+
+		// Ignore other non-printable control characters
+		if b < 0x20 {
+			continue
+		}
+
+		if line.Len() >= maxLineLength {
+			return "", fmt.Errorf("password too long")
+		}
+
+		if _, err := s.writeClient([]byte{'*'}); err != nil {
+			return "", err
+		}
+		line.WriteByte(b)
+	}
+}
+
 func (s *Session) processCommand(input string) {
 	if input == "" {
 		return
 	}
 
-	cmd := modem.ParseCommand(input)
+	commands := modem.ParseCommandLine(input)
 
-	if cmd.Type == modem.CmdUnknown {
-		s.logger.InvalidCommand(input)
-		s.sendResult(modem.ResultError)
-		return
-	}
-
-	// Handle dial command specially
-	if cmd.Type == modem.CmdDial {
-		s.handleDial(cmd.Number)
-		return
-	}
-
-	// Handle ATCLS (clear screen and redraw banner)
-	if cmd.Type == modem.CmdClear {
-		s.writeClient([]byte(s.banner))
-		s.sendResult(modem.ResultOK)
-		return
-	}
-
-	// Handle ATO (return to data mode)
-	if cmd.Type == modem.CmdOnline {
-		s.remoteMu.Lock()
-		hasRemote := s.remoteConn != nil
-		s.remoteMu.Unlock()
-		if hasRemote {
-			s.modem.SetState(modem.StateData)
-			s.sendResult(modem.ResultConnect)
-		} else {
-			s.sendResult(modem.ResultNoCarrier)
+	// Buffer info payloads from intermediate sub-commands; the terminal
+	// result code (OK / CONNECT / NO CARRIER / ERROR) is emitted once for
+	// the whole line by the last sub-command (or the short-circuiting
+	// dial / clear / online / unknown branch).
+	var infoOut strings.Builder
+	flushInfo := func() bool {
+		if infoOut.Len() == 0 {
+			return true
 		}
-		return
+		_, err := s.writeClient([]byte(infoOut.String()))
+		infoOut.Reset()
+		return err == nil
 	}
 
-	response, _, _ := s.modem.Execute(cmd)
-	if response != "" {
-		if _, err := s.writeClient([]byte(response)); err != nil {
+	for i, cmd := range commands {
+		isLast := i == len(commands)-1
+
+		if cmd.Type == modem.CmdUnknown {
+			s.logger.InvalidCommand(input)
+			flushInfo()
+			s.sendResult(modem.ResultError)
 			return
 		}
+
+		// Handle dial command specially
+		if cmd.Type == modem.CmdDial {
+			if !flushInfo() {
+				return
+			}
+			s.handleDial(cmd.Number)
+			return
+		}
+
+		// Handle ATCLS (clear screen and redraw banner)
+		if cmd.Type == modem.CmdClear {
+			if !flushInfo() {
+				return
+			}
+			if _, err := s.writeClient([]byte(s.banner)); err != nil {
+				return
+			}
+			if isLast {
+				s.sendResult(modem.ResultOK)
+				return
+			}
+			continue
+		}
+
+		// Handle ATO (return to data mode)
+		if cmd.Type == modem.CmdOnline {
+			if !flushInfo() {
+				return
+			}
+			s.remoteMu.Lock()
+			hasRemote := s.remoteConn != nil
+			s.remoteMu.Unlock()
+			if hasRemote {
+				s.modem.SetState(modem.StateData)
+				s.sendResult(modem.ResultConnect)
+			} else {
+				s.sendResult(modem.ResultNoCarrier)
+			}
+			return
+		}
+
+		response, _, _ := s.modem.Execute(cmd)
+		if response == "" {
+			continue
+		}
+		if isLast {
+			if !flushInfo() {
+				return
+			}
+			if _, err := s.writeClient([]byte(response)); err != nil {
+				return
+			}
+			continue
+		}
+		// Intermediate command: strip the trailing OK, keep any info payload
+		// (e.g. ATI banner, S-register query value, AT&V config dump).
+		okSuffix := s.modem.FormatResultExternal(modem.ResultOK)
+		infoOut.WriteString(strings.TrimSuffix(response, okSuffix))
 	}
 }
 

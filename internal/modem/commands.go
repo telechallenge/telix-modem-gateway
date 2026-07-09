@@ -206,6 +206,128 @@ func ParseCommand(input string) *Command {
 	return cmd
 }
 
+// ParseCommandLine parses a compound AT command line into individual commands.
+// Real Hayes modems allow multiple commands after a single AT prefix, e.g.
+// "AT V1 X4 S11=30 S7=60" is four commands: V1, X4, S11=30, S7=60.
+// Spaces between sub-commands are optional.
+// Returns on first unknown sub-command with CmdUnknown.
+func ParseCommandLine(input string) []*Command {
+	input = strings.TrimSpace(input)
+	upper := strings.ToUpper(input)
+
+	if !strings.HasPrefix(upper, "AT") {
+		return []*Command{{Type: CmdUnknown, Raw: input}}
+	}
+
+	if upper == "AT" {
+		return []*Command{{Type: CmdAT, Raw: input}}
+	}
+
+	// Try single-command parse first for exact matches like ATZ, AT&F, ATCLS
+	single := ParseCommand(input)
+	if single.Type != CmdUnknown {
+		return []*Command{single}
+	}
+
+	// Tokenize the part after "AT" into individual sub-commands
+	rest := input[2:]
+	var commands []*Command
+	i := 0
+
+	for i < len(rest) {
+		// Skip spaces
+		if rest[i] == ' ' {
+			i++
+			continue
+		}
+
+		ch := upper[2+i] // uppercase version of current char
+
+		switch {
+		case ch == 'D': // Dial — consumes rest of line
+			cmd := ParseCommand("AT" + strings.TrimSpace(rest[i:]))
+			commands = append(commands, cmd)
+			return commands
+
+		case ch == 'S': // S-register: S<digits>=<digits> or S<digits>?
+			j := i + 1
+			for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+				j++
+			}
+			if j < len(rest) && rest[j] == '=' {
+				j++
+				for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+					j++
+				}
+			} else if j < len(rest) && rest[j] == '?' {
+				j++
+			}
+			cmd := ParseCommand("AT" + rest[i:j])
+			if cmd.Type == CmdUnknown {
+				return append(commands, cmd)
+			}
+			commands = append(commands, cmd)
+			i = j
+
+		case ch == '&': // & commands: &F, &V, &N<digits>, &Q<digit>
+			j := i + 1
+			if j < len(rest) {
+				j++ // consume letter after &
+				for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+					j++
+				}
+			}
+			cmd := ParseCommand("AT" + rest[i:j])
+			if cmd.Type == CmdUnknown {
+				return append(commands, cmd)
+			}
+			commands = append(commands, cmd)
+			i = j
+
+		case ch == '%': // % commands: %C<digit>
+			j := i + 1
+			if j < len(rest) {
+				j++ // consume letter after %
+				for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+					j++
+				}
+			}
+			cmd := ParseCommand("AT" + rest[i:j])
+			if cmd.Type == CmdUnknown {
+				return append(commands, cmd)
+			}
+			commands = append(commands, cmd)
+			i = j
+
+		case ch == 'C': // Could be CLS
+			if i+3 <= len(rest) && strings.ToUpper(rest[i:i+3]) == "CLS" {
+				commands = append(commands, &Command{Type: CmdClear, Raw: "ATCLS"})
+				i += 3
+			} else {
+				return append(commands, &Command{Type: CmdUnknown, Raw: "AT" + string(rest[i])})
+			}
+
+		default: // Single letter + optional digit: V0/V1, E0/E1, Q0/Q1, X0-X4, H/H0/H1, I, Z, O/O0
+			j := i + 1
+			if j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+				j++
+			}
+			cmd := ParseCommand("AT" + rest[i:j])
+			if cmd.Type == CmdUnknown {
+				return append(commands, cmd)
+			}
+			commands = append(commands, cmd)
+			i = j
+		}
+	}
+
+	if len(commands) == 0 {
+		return []*Command{{Type: CmdUnknown, Raw: input}}
+	}
+
+	return commands
+}
+
 // ResultCode represents modem result codes
 type ResultCode int
 

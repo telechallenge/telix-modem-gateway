@@ -76,6 +76,73 @@ func TestParseSRegisterQuery(t *testing.T) {
 	}
 }
 
+func TestParseCommandLine(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []CommandType
+	}{
+		{"single AT", "AT", []CommandType{CmdAT}},
+		{"single reset", "ATZ", []CommandType{CmdReset}},
+		{"single verbose", "ATV1", []CommandType{CmdVerboseOn}},
+		{"compound with spaces", "AT V1 X4 S11=30 S7=60", []CommandType{CmdVerboseOn, CmdSetX, CmdSRegisterSet, CmdSRegisterSet}},
+		{"compound no spaces", "ATV1X4S11=30S7=60", []CommandType{CmdVerboseOn, CmdSetX, CmdSRegisterSet, CmdSRegisterSet}},
+		{"compound mixed", "ATE0 V1X4", []CommandType{CmdEchoOff, CmdVerboseOn, CmdSetX}},
+		{"dial consumes rest", "ATE0V1DT916-555-1212", []CommandType{CmdEchoOff, CmdVerboseOn, CmdDial}},
+		{"ampersand commands", "AT&Q5%C1V1", []CommandType{CmdSetErrorCorrection, CmdSetCompression, CmdVerboseOn}},
+		{"s-register query", "ATV1S12?", []CommandType{CmdVerboseOn, CmdSRegisterQuery}},
+		{"factory reset", "AT&F", []CommandType{CmdFactoryReset}},
+		{"atcls", "ATCLS", []CommandType{CmdClear}},
+		{"lock speed", "AT&N8V1", []CommandType{CmdLockSpeed, CmdVerboseOn}},
+		{"not AT prefix", "HELLO", []CommandType{CmdUnknown}},
+		{"unknown sub-command stops", "ATJV1", []CommandType{CmdUnknown}},
+		{"hangup variants", "ATH0V1", []CommandType{CmdHangup, CmdVerboseOn}},
+		{"online return", "ATO", []CommandType{CmdOnline}},
+		{"identify", "ATI", []CommandType{CmdIdentify}},
+		{"case insensitive", "at v1 x4 s11=30", []CommandType{CmdVerboseOn, CmdSetX, CmdSRegisterSet}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmds := ParseCommandLine(tt.input)
+			if len(cmds) != len(tt.expected) {
+				t.Fatalf("ParseCommandLine(%q) returned %d commands, want %d", tt.input, len(cmds), len(tt.expected))
+			}
+			for i, cmd := range cmds {
+				if cmd.Type != tt.expected[i] {
+					t.Errorf("ParseCommandLine(%q)[%d].Type = %v, want %v", tt.input, i, cmd.Type, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseCommandLineValues(t *testing.T) {
+	// Verify values are correctly parsed for compound commands
+	cmds := ParseCommandLine("AT X4 S11=30 S7=60")
+	if len(cmds) != 3 {
+		t.Fatalf("expected 3 commands, got %d", len(cmds))
+	}
+	if cmds[0].Value != 4 {
+		t.Errorf("X4 value = %d, want 4", cmds[0].Value)
+	}
+	if cmds[1].Register != 11 || cmds[1].Value != 30 {
+		t.Errorf("S11=30 got register=%d value=%d", cmds[1].Register, cmds[1].Value)
+	}
+	if cmds[2].Register != 7 || cmds[2].Value != 60 {
+		t.Errorf("S7=60 got register=%d value=%d", cmds[2].Register, cmds[2].Value)
+	}
+
+	// Verify dial number preserved
+	cmds = ParseCommandLine("ATE0DT916-555-1212")
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d", len(cmds))
+	}
+	if cmds[1].Number != "916-555-1212" {
+		t.Errorf("dial number = %q, want %q", cmds[1].Number, "916-555-1212")
+	}
+}
+
 func TestResultCodeString(t *testing.T) {
 	tests := []struct {
 		code     ResultCode
