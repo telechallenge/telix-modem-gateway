@@ -535,7 +535,9 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 		return
 	}
 
-	filter := dialer.NewTelnetFilter()
+	// Remote-facing: decides for itself whether the BBS speaks telnet, so that
+	// a raw TCP BBS's undoubled 0xFF survives inside ZMODEM file data.
+	filter := dialer.NewRemoteTelnetFilter()
 	escapeChar := s.modem.Registers().GetEscapeChar()
 	guardTime := time.Duration(s.modem.Registers().GetEscapeGuardTime()) * time.Millisecond
 
@@ -547,6 +549,18 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 	escapeCount := 0
 	var lastEscapeTime time.Time
 	preEscapePause := false
+
+	// appendRemote queues one data byte for the BBS, doubling 0xFF when the peer
+	// speaks telnet. The client-side filter has already collapsed the proxy's
+	// doubled 0xFF back to a single byte, so without this a literal 0xFF inside
+	// an upload reaches a telnet BBS as a bare IAC and is swallowed along with
+	// the byte after it.
+	appendRemote := func(out []byte, b byte) []byte {
+		if b == dialer.IAC && filter.PeerSpeaksTelnet() {
+			return append(out, dialer.IAC, dialer.IAC)
+		}
+		return append(out, b)
+	}
 
 	remoteGone := make(chan struct{})
 	readerDone := make(chan struct{})
@@ -621,9 +635,21 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 						s.sendResult(modem.ResultOK)
 						return
 					}
-					// Reset escape state
+					// Not an escape after all. The withheld characters are
+					// ordinary data and still have to reach the BBS — dropping
+					// them silently lost any escape char the user typed (or
+					// that occurred in an upload) before a pause.
+					var pending []byte
+					for i := 0; i < escapeCount; i++ {
+						pending = appendRemote(pending, escapeChar)
+					}
 					escapeCount = 0
 					preEscapePause = false
+					if _, err := remote.Write(pending); err != nil {
+						s.hangup()
+						s.sendResult(modem.ResultNoCarrier)
+						return
+					}
 				}
 				continue
 			}
@@ -641,6 +667,11 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 			s.writeClient(responses)
 		}
 
+		// Accumulate the whole chunk and write it once. Writing a byte at a
+		// time put each one in its own TCP segment, and the resulting
+		// Nagle/delayed-ACK stalls held uploads to roughly 1 KB/s.
+		out := make([]byte, 0, len(filtered)+escapeCount)
+
 		// Process each filtered byte for escape detection
 		for _, b := range filtered {
 			now := time.Now()
@@ -654,11 +685,7 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 						lastEscapeTime = now
 					} else {
 						// No pre-pause, send char through
-						if _, err := remote.Write([]byte{b}); err != nil {
-							s.hangup()
-							s.sendResult(modem.ResultNoCarrier)
-							return
-						}
+						out = appendRemote(out, b)
 					}
 				} else {
 					// Subsequent escape chars
@@ -681,23 +708,23 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 
 				// If we had pending escapes, send them through
 				for i := 0; i < escapeCount; i++ {
-					if _, err := remote.Write([]byte{escapeChar}); err != nil {
-						s.hangup()
-						s.sendResult(modem.ResultNoCarrier)
-						return
-					}
+					out = appendRemote(out, escapeChar)
 				}
 				escapeCount = 0
 
 				// Send current character
-				if _, err := remote.Write([]byte{b}); err != nil {
-					s.hangup()
-					s.sendResult(modem.ResultNoCarrier)
-					return
-				}
+				out = appendRemote(out, b)
 			}
 
 			s.lastInput = now
+		}
+
+		if len(out) > 0 {
+			if _, err := remote.Write(out); err != nil {
+				s.hangup()
+				s.sendResult(modem.ResultNoCarrier)
+				return
+			}
 		}
 	}
 }

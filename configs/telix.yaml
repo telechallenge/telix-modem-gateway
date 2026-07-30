@@ -10,37 +10,35 @@ logging:
   file: ./logs/telix.log
 
 phonebook:
-  - number: "916-555-1212"
-    host: "127.0.0.1"
-    port: 8888
-    name: "Enigma Demo"
-    required_settings:
-      init: "ATZ"           # modem must send ATZ before dialing
-      baud: 9600            # modem must AT&N8 (lock to 9600) before dialing
+  - number: "206-865-0342"
+    host: "host.docker.internal"
+    port: 8401
+    name: "Fungus LAND BBS"
+    password: "DECALPHA"
 
-  - number: "415-555-0100"
-    host: "bbs.example.com"
-    port: 23
-    name: "Example BBS"
-    # error_correction and compression default to true — matches ATZ defaults
+  - number: "916-555-1212"
+    host: "host.docker.internal"
+    port: 8402
+    name: "Friendy World"
 
   - number: "800-555-1234"
     host: "telehack.com"
     port: 23
     name: "Telehack"
 
-  - number: "202-555-0001"
-    host: "retro.example.com"
-    port: 23
-    name: "Ye Olde BBS"
-    required_settings:
-      baud: 300
-      error_correction: false   # raw connection, no V.42
-      compression: false        # no V.42bis
+  - number: "206-451-1905"
+    host: "host.docker.internal"
+    port: 21023
+    name: "The B in BBS"
 
-  # Example: number gated by a password. The user is prompted for the
-  # password (shadow-echoed as '*') after dial tone; wrong password ->
-  # NO CARRIER without ever touching the remote host.
+  - number: "916-548-3208"
+    host: "host.docker.internal"
+    port: 8403
+    name: "HPACV Heaven"
+
+  # Example: number gated by a password. The modem rings and reports CONNECT
+  # first, so the prompt (shadow-echoed as '*') looks like the BBS's own login;
+  # wrong password -> NO CARRIER without ever touching the remote host.
   # - number: "555-0199"
   #   host: "private.example.com"
   #   port: 23
@@ -52,11 +50,6 @@ dialer:
   # If set, phonebook hosts must resolve to IPs within these CIDRs.
   # Leave empty to allow all destinations (not recommended in production).
   allowed_networks:
-    - "10.0.0.0/8"
-    - "172.16.0.0/12"
-    - "192.168.0.0/16"
-    - "127.0.0.0/8"
-    - "64.13.139.230/32"
 
 rate_limit:
   enabled: true

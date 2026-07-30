@@ -125,11 +125,25 @@ html, body {
 }
 
 .crt-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.crt-brand-name {
   font-family: 'PxPlus IBM VGA 8x16', monospace;
-  font-size: 11px;
-  color: #555;
+  font-size: 13px;
+  font-weight: bold;
+  color: #6a6a6a;
   letter-spacing: 3px;
   text-transform: uppercase;
+}
+
+.crt-brand-maker {
+  font-family: 'PxPlus IBM VGA 8x16', monospace;
+  font-size: 9px;
+  color: #4a4a4a;
+  letter-spacing: 1px;
 }
 
 /* --- Stand --- */

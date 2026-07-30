@@ -9,6 +9,10 @@ services:
     restart: unless-stopped
     ports:
       - "2323:2323"
+    # Lets phonebook entries reach BBS containers that publish ports on the
+    # host but sit on other Docker networks.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./configs/telix.yaml:/etc/telix/telix.yaml:ro
       - telix-logs:/app/logs

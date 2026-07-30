@@ -127,28 +127,56 @@
   }
 
   function promptUpload(maxBytes) {
+    // A file <input> only opens its picker during transient user activation.
+    // This runs from a WebSocket frame (the BBS's ZRINIT), which has none, so
+    // calling uploadInput.click() directly is silently blocked and no dialog
+    // appears. Surface a button instead and open the picker from its click —
+    // the same gesture-carrying path the download "Save" button uses.
     return new Promise(resolve => {
-      const onChange = () => {
+      let settled = false;
+      function finish(files) {
+        if (settled) return;
+        settled = true;
         uploadInput.removeEventListener('change', onChange);
-        uploadInput.removeEventListener('cancel', onCancel);
+        bubble.remove();
+        resolve(files);
+      }
+
+      const onChange = () => {
         const files = Array.from(uploadInput.files || []);
-        uploadInput.value = ''; // reset so same file can be re-picked
+        uploadInput.value = ''; // reset so the same file can be re-picked
+        if (files.length === 0) return; // native cancel — leave the prompt up
         const oversize = files.find(f => f.size > maxBytes);
         if (oversize) {
           surfaceError(`${oversize.name}: exceeds ${window.XferUtil.formatBytes(maxBytes)}`);
-          resolve([]);
+          finish([]);
         } else {
-          resolve(files);
+          finish(files);
         }
       };
-      const onCancel = () => {
-        uploadInput.removeEventListener('change', onChange);
-        uploadInput.removeEventListener('cancel', onCancel);
-        resolve([]);
-      };
       uploadInput.addEventListener('change', onChange);
-      uploadInput.addEventListener('cancel', onCancel);
-      uploadInput.click();
+
+      const bubble = document.createElement('div');
+      bubble.className = 'xfer-notification';
+
+      const label = document.createElement('span');
+      label.textContent = '⬆ BBS ready — choose file(s) to upload';
+      label.style.flex = '1';
+
+      const chooseBtn = document.createElement('button');
+      chooseBtn.type = 'button';
+      chooseBtn.textContent = 'Choose files';
+      chooseBtn.addEventListener('click', () => uploadInput.click()); // user gesture
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => finish([]));
+
+      bubble.appendChild(label);
+      bubble.appendChild(chooseBtn);
+      bubble.appendChild(cancelBtn);
+      notifications.appendChild(bubble);
     });
   }
 

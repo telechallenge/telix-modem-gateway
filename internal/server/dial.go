@@ -47,12 +47,14 @@ func (s *Session) handleDial(number string) {
 		return
 	}
 
-	// If the entry requires a password, prompt for it before dialing.
-	// One attempt only — wrong password terminates the dial with NO CARRIER.
+	// A password-gated entry rings and reports CONNECT first, so the prompt
+	// that follows reads as the BBS's own login rather than something the
+	// gateway printed in command mode.
 	if entry.Password != "" {
-		if !s.promptPassword(number, entry.Password) {
-			return
-		}
+		s.sendRings()
+		s.modemHandshakePause()
+		s.gatedConnect(number, entry)
+		return
 	}
 
 	// Attempt connection while ringing
@@ -136,6 +138,44 @@ func (s *Session) handleDial(number string) {
 	s.modem.SetState(modem.StateData)
 	s.logger.ConnectionAttempt(number, "success")
 	s.sendConnect(entry.RequiredSettings.Baud)
+}
+
+// gatedConnect completes a password-protected dial once the ringing is over.
+// It reports CONNECT so the terminal believes the far end picked up, presents
+// the PASSWORD: prompt as the BBS itself would, and only then places the
+// outbound call — a rejected password never touches the remote host.
+func (s *Session) gatedConnect(number string, entry *config.PhonebookEntry) {
+	s.sendConnect(entry.RequiredSettings.Baud)
+
+	// Let the "BBS" take a beat before its login prompt, the way a real one
+	// would, instead of emitting it in the same burst as CONNECT.
+	time.Sleep(time.Duration(400+rand.Intn(800)) * time.Millisecond)
+
+	if !s.promptPassword(number, entry.Password) {
+		return
+	}
+
+	s.logger.ConnectionAttempt(number, "attempting")
+	timeout := time.Duration(s.modem.Registers().GetConnectionTimeout()) * time.Second
+	d := dialer.New(timeout, s.config.Dialer.ParsedNetworks())
+
+	conn, err := d.Dial(entry.Host, entry.Port)
+	if err != nil {
+		s.logger.ConnectionAttempt(number, "failed")
+		// The terminal already saw CONNECT, so a dropped carrier is the only
+		// report left that doesn't contradict it — BUSY would.
+		s.sendResult(modem.ResultNoCarrier)
+		return
+	}
+
+	s.remoteMu.Lock()
+	s.remoteConn = conn
+	s.remoteMu.Unlock()
+
+	s.modem.SetState(modem.StateData)
+	s.logger.ConnectionAttempt(number, "success")
+	// No second CONNECT: as far as the terminal is concerned the call has
+	// been up since before the password prompt.
 }
 
 // promptPassword prompts the client for a password, shadow-echoing '*' per

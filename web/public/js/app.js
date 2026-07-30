@@ -77,19 +77,33 @@ document.addEventListener('DOMContentLoaded', () => {
     ['hs', 'cd', 'oh', 'cs', 'arq'].forEach(n => on ? ledOn(n) : ledOff(n));
   }
 
-  function checkModemState(text) {
-    if (/CONNECT\b/.test(text)) {
+  function applyResultCode(code) {
+    // Once in data mode the only code the modem can still emit is a carrier
+    // drop. Everything else on the wire is BBS output, which must never be
+    // able to restart the dial audio mid-session.
+    if (modemConnected && code !== 'NO CARRIER') return;
+
+    if (code === 'CONNECT') {
       setConnected(true);
       ModemAudio.onConnect();
-    } else if (/BUSY/.test(text)) {
+    } else if (code === 'BUSY') {
       setConnected(false);
       ModemAudio.onBusy();
-    } else if (/NO CARRIER|NO ANSWER|NO DIALTONE/.test(text)) {
-      setConnected(false);
-      ModemAudio.onFailure();
-    } else if (/RING/.test(text)) {
+    } else if (code === 'RING') {
       ledOn('oh');
       ModemAudio.onRing();
+    } else {
+      // NO CARRIER / NO ANSWER / NO DIALTONE
+      setConnected(false);
+      ModemAudio.onFailure();
+    }
+  }
+
+  function checkModemState(text) {
+    // A chunk can carry more than one code (RING then CONNECT); apply them in
+    // arrival order so the last one wins.
+    for (const code of window.ModemState.parseResultCodes(text)) {
+      applyResultCode(code);
     }
   }
 

@@ -281,6 +281,40 @@ func TestTelnetFilter(t *testing.T) {
 			wantFiltered: []byte("AB"),
 			wantResponse: nil,
 		},
+
+		// 8. Raw (non-telnet) peers send 0xFF undoubled. Byte values below SE
+		// are not telnet commands, so IAC plus that byte must reach the client
+		// intact — dropping the pair corrupts binary transfers like ZMODEM.
+		{
+			name:         "IAC followed by a non-command byte passes both through",
+			inputs:       [][]byte{{IAC, 0x06}},
+			wantFiltered: []byte{IAC, 0x06},
+			wantResponse: nil,
+		},
+		{
+			name:         "undoubled 0xFF inside binary data survives with neighbours",
+			inputs:       [][]byte{{0xF8, IAC, 0x06, 0x0D}},
+			wantFiltered: []byte{0xF8, IAC, 0x06, 0x0D},
+			wantResponse: nil,
+		},
+		{
+			name:         "IAC before NUL passes through",
+			inputs:       [][]byte{{IAC, 0x00, 'Z'}},
+			wantFiltered: []byte{IAC, 0x00, 'Z'},
+			wantResponse: nil,
+		},
+		{
+			name:         "IAC then non-command split across Filter calls",
+			inputs:       [][]byte{{'A', IAC}, {0x06, 'B'}},
+			wantFiltered: []byte{'A', IAC, 0x06, 'B'},
+			wantResponse: nil,
+		},
+		{
+			name:         "SE=240 alone is still treated as a command, not data",
+			inputs:       [][]byte{{'A', IAC, SE, 'B'}},
+			wantFiltered: []byte("AB"),
+			wantResponse: nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -323,6 +357,100 @@ func mustParseCIDR(t *testing.T, cidr string) *net.IPNet {
 		t.Fatalf("invalid CIDR %q: %v", cidr, err)
 	}
 	return ipNet
+}
+
+// A raw TCP BBS never negotiates and never doubles 0xFF. Once a ZMODEM frame
+// starts, its file data must reach the client byte for byte — the bug this
+// guards against silently ate 0xFF and the byte after it, corrupting downloads.
+func TestRemoteTelnetFilter_RawPeerPassesBinaryThrough(t *testing.T) {
+	zmodemStart := []byte{ZPAD, ZPAD, ZDLE, ZHEX, '0', '0'}
+
+	tests := []struct {
+		name string
+		data []byte // sent after the ZMODEM frame header
+		want []byte
+	}{
+		{
+			name: "0xFF followed by a telnet command byte survives",
+			data: []byte{0x01, IAC, WILL, 0x02},
+			want: []byte{0x01, IAC, WILL, 0x02},
+		},
+		{
+			name: "doubled-looking 0xFF stays two bytes for a raw peer",
+			data: []byte{IAC, IAC},
+			want: []byte{IAC, IAC},
+		},
+		{
+			name: "0xFF before SE survives",
+			data: []byte{IAC, SE, 'x'},
+			want: []byte{IAC, SE, 'x'},
+		},
+		{
+			name: "0xFF before a subnegotiation byte survives",
+			data: []byte{IAC, SB, NAWS},
+			want: []byte{IAC, SB, NAWS},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := NewRemoteTelnetFilter()
+			f.Filter(zmodemStart)
+			got, responses := f.Filter(tt.data)
+			if !bytes.Equal(got, tt.want) {
+				t.Errorf("filtered = % 02x, want % 02x", got, tt.want)
+			}
+			if len(responses) != 0 {
+				t.Errorf("raw peer must not draw telnet responses, got % 02x", responses)
+			}
+		})
+	}
+}
+
+// The mirror case: a BBS that did negotiate is a real telnet peer, so its
+// doubled 0xFF must still collapse to one byte even during a transfer.
+func TestRemoteTelnetFilter_TelnetPeerStillUnescapes(t *testing.T) {
+	f := NewRemoteTelnetFilter()
+
+	// Login-time negotiation proves the peer speaks telnet.
+	if _, responses := f.Filter([]byte{IAC, DO, SUPPRESS_GO_AHEAD}); len(responses) == 0 {
+		t.Fatal("expected a negotiation response")
+	}
+	f.Filter([]byte{ZPAD, ZPAD, ZDLE, ZHEX}) // transfer begins
+
+	got, _ := f.Filter([]byte{'a', IAC, IAC, 'b'})
+	want := []byte{'a', IAC, 'b'}
+	if !bytes.Equal(got, want) {
+		t.Errorf("filtered = % 02x, want % 02x", got, want)
+	}
+}
+
+// Once a transfer is under way the verdict must not change, or file data that
+// happens to contain IAC WILL would flip a raw peer into telnet mode mid-stream.
+func TestRemoteTelnetFilter_VerdictLocksAtTransferStart(t *testing.T) {
+	f := NewRemoteTelnetFilter()
+	f.Filter([]byte{ZPAD, ZPAD, ZDLE, ZBIN32}) // transfer begins, peer never negotiated
+
+	// This looks exactly like negotiation but is file content.
+	if _, responses := f.Filter([]byte{IAC, DO, SUPPRESS_GO_AHEAD}); len(responses) != 0 {
+		t.Errorf("locked raw peer must not answer negotiation, got % 02x", responses)
+	}
+	got, _ := f.Filter([]byte{IAC, IAC})
+	if want := []byte{IAC, IAC}; !bytes.Equal(got, want) {
+		t.Errorf("after lock filtered = % 02x, want % 02x", got, want)
+	}
+}
+
+// Client-facing input keeps the strict contract: the web proxy always doubles
+// 0xFF, so the filter must always undo it regardless of ZMODEM traffic.
+func TestClientTelnetFilter_AlwaysUnescapesIAC(t *testing.T) {
+	f := NewTelnetFilter()
+	f.Filter([]byte{ZPAD, ZPAD, ZDLE, ZHEX}) // an upload begins
+
+	got, _ := f.Filter([]byte{IAC, IAC})
+	if want := []byte{IAC}; !bytes.Equal(got, want) {
+		t.Errorf("filtered = % 02x, want % 02x", got, want)
+	}
 }
 
 func TestDialerIPAllowed_WithinCIDR(t *testing.T) {

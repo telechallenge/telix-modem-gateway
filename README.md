@@ -129,6 +129,16 @@ phonebook:
 
 **Phone numbers** are normalized — dashes, dots, spaces, and parentheses are stripped for matching, so `916-555-1212`, `(916) 555-1212`, and `9165551212` all match the same entry.
 
+**Hosts are resolved from inside the gateway container.** Under Docker Compose, `localhost` and `127.0.0.1` refer to the gateway container itself — not your machine. To reach a BBS that publishes a port on the host (including one running in another container), use `host.docker.internal`, which the Compose file maps to the host gateway:
+
+```yaml
+  - number: "916-548-3208"
+    host: "host.docker.internal"   # not "localhost"
+    port: 8403
+```
+
+If `allowed_networks` is set, make sure it covers the Docker bridge (`172.16.0.0/12`) — `127.0.0.0/8` will not match `host.docker.internal`.
+
 #### Required settings
 
 Both fields are optional. If omitted, the entry connects with no preconditions.
@@ -143,6 +153,20 @@ Both fields are optional. If omitted, the entry connects with no preconditions.
 When `baud` is specified, a successful connection reports `CONNECT <baud>` at that speed. When not specified, the modem uses its locked speed (if set) or picks a realistic random speed from a weighted pool.
 
 **Backward compatibility**: The older `required_init` field still works and is automatically migrated to `required_settings.init` at load time.
+
+#### Password-gated entries
+
+An entry with a `password` field asks for it before bridging the call:
+
+```yaml
+  - number: "555-0199"
+    host: "private.example.com"
+    port: 23
+    name: "Private BBS"
+    password: "swordfish"
+```
+
+The modem rings and reports `CONNECT` first, then a `PASSWORD:` prompt appears — so it reads as the BBS's own login rather than something the gateway printed. Input is shadow-echoed as `*` regardless of `ATE0`/`ATE1`. One attempt only: a wrong password drops the call with `NO CARRIER`, and the outbound connection is never opened, so a failed guess never reaches the remote host.
 
 ## AT command reference
 

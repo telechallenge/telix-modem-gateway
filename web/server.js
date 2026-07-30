@@ -3,6 +3,8 @@ const http = require('http');
 const net = require('net');
 const { WebSocketServer } = require('ws');
 const path = require('path');
+const fs = require('fs');
+const { computeAssetVersion, stampAssetUrls } = require('./asset-version');
 
 const TELIX_HOST = process.env.TELIX_HOST || 'localhost';
 const TELIX_PORT = parseInt(process.env.TELIX_PORT || '2323', 10);
@@ -45,9 +47,37 @@ function getClientIP(req) {
   return req.socket.remoteAddress || 'unknown';
 }
 
+// --- Asset versioning (cache-busting) ---
+// Static JS/CSS is loaded with no version marker, so a browser (or the
+// Cloudflare edge in front of the origin) will keep serving a cached copy long
+// after a redeploy. That silently strands users on old code. We stamp a
+// content hash onto each local asset URL in index.html and serve the HTML itself
+// as no-cache, so a changed bundle always produces a fresh URL that no cache can
+// satisfy from a stale copy.
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// Hash of the bundle and the versioned index.html, computed once at startup —
+// the files can't change under a running server.
+let INDEX_HTML;
+try {
+  const version = computeAssetVersion(PUBLIC_DIR);
+  INDEX_HTML = stampAssetUrls(fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8'), version);
+} catch (e) {
+  INDEX_HTML = null; // fall back to static serving of the raw index.html
+}
+
 // --- Express + WebSocket server ---
 const app = express();
-app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve the versioned HTML for the app entry points, always revalidated so the
+// stamped asset URLs are never themselves cached stale.
+app.get(['/', '/index.html'], (req, res, next) => {
+  if (!INDEX_HTML) return next();
+  res.set('Cache-Control', 'no-cache');
+  res.type('html').send(INDEX_HTML);
+});
+
+app.use(express.static(PUBLIC_DIR));
 
 app.get('/config.json', (req, res) => {
   res.json({
