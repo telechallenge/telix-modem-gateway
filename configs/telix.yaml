@@ -16,12 +16,12 @@ phonebook:
     name: "Fungus LAND BBS"
     password: "DECALPHA"
 
-  - number: "916-555-1212"
-    host: "host.docker.internal"
-    port: 8402
-    name: "Friendy World"
+  - number: "860-594-0200"
+    host: "BBS.hamvillage.org"
+    port: 23
+    name: "hamvillage bbs"
 
-  - number: "800-555-1234"
+  - number: "867-5309"
     host: "telehack.com"
     port: 23
     name: "Telehack"
@@ -31,10 +31,15 @@ phonebook:
     port: 21023
     name: "The B in BBS"
 
-  - number: "916-548-3208"
+  - number: "867-5309"
     host: "host.docker.internal"
     port: 8403
     name: "HPACV Heaven"
+
+  - number: "702-385-5652"
+    host: "host.docker.internal"
+    port: 2475
+    name: "Boringland download"
 
   # Example: number gated by a password. The modem rings and reports CONNECT
   # first, so the prompt (shadow-echoed as '*') looks like the BBS's own login;

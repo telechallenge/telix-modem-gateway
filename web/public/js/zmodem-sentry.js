@@ -114,10 +114,15 @@
   // upload to such a BBS never even opens the file picker — the ZRINIT just
   // echoes to the terminal and `rz` retransmits forever.
   //
-  // The buffer size is advisory windowing; over TCP the sender can stream and
-  // the receiver copes. So we rewrite an inbound ZRINIT to advertise buffer 0,
-  // preserving its capability flags, and fix up the CRC. Keeping this in our
-  // code leaves the vendored library untouched.
+  // So we rewrite an inbound ZRINIT to advertise buffer 0, preserving its
+  // capability flags, and fix up the CRC. Keeping this in our code leaves the
+  // vendored library untouched.
+  //
+  // The rewrite is a lie, and on its own it is only half a fix: the receiver
+  // asked for windowing and we told it that it didn't. `applyWindowedSend`
+  // below pays that debt back by honouring the real figure. Read the two
+  // together — rewriting alone streams a whole file at a receiver that asked us
+  // not to, which it survives right up until it doesn't.
   //
   // Hex header layout after "**<ZDLE>B": TYPE(2) ZP0(2) ZP1(2) ZP2(2) ZP3(2)
   // CRC(4), each pair an ASCII hex byte. get_buffer_size() reads ZP0/ZP1.
@@ -132,7 +137,7 @@
     arr.push(HEX_DIGITS.charCodeAt((v >> 4) & 0xf), HEX_DIGITS.charCodeAt(v & 0xf));
   }
 
-  function neutralizeZrinitBuffer(chunk) {
+  function adaptZrinitForSender(chunk) {
     const H = 4; // past "**<ZDLE>B"
     if (chunk.length < H + 14) return chunk; // header not fully present
     const bytes = [];
@@ -154,6 +159,169 @@
     return Uint8Array.from(rebuilt);
   }
 
+  // Reads the receive-window size a ZRINIT advertises, in bytes. 0 means the
+  // receiver streams and needs no windowing. Must be called before
+  // adaptZrinitForSender, which zeroes the very field this reads.
+  function readZrinitWindow(chunk) {
+    const H = 4; // past "**<ZDLE>B"
+    if (chunk.length < H + 14) return 0;
+    const zp0hi = hexVal(chunk[H + 2]), zp0lo = hexVal(chunk[H + 3]);
+    const zp1hi = hexVal(chunk[H + 4]), zp1lo = hexVal(chunk[H + 5]);
+    if (zp0hi < 0 || zp0lo < 0 || zp1hi < 0 || zp1lo < 0) return 0;
+    // ZP0 is the low byte of the size, ZP1 the high byte.
+    return ((zp0hi << 4) | zp0lo) | (((zp1hi << 4) | zp1lo) << 8);
+  }
+
+  // Teaches a send session to respect the window its receiver asked for.
+  //
+  // zmodem.js's sender is firehose-only by design — "Sender opens the firehose
+  // … all ZCRCG (!end/!ack) until the end" — which is why _consume_ZRINIT
+  // rejects a windowed receiver outright instead of slowing down for one. Since
+  // we rewrite that ZRINIT to get past the check, nothing else will pace the
+  // send, and a receiver that advertised 8192 gets the entire file in one
+  // burst. Searchlight BBS cancels with CAN*8 when that happens; the browser
+  // still shows 100%, because progress counts bytes handed to zmodem.js rather
+  // than bytes the receiver acknowledged.
+  //
+  // So: send at most `windowSize` bytes, close the frame with ZCRCW ("frame
+  // ends, ZACK expected"), and wait for the ZACK before continuing. The library
+  // documents this exact extension point on _send_interim_file_piece — "for now
+  // the promise is always resolved, but in the future we can make it only
+  // resolve once we've gotten acknowledgement" — so overriding the method on
+  // the session instance keeps the vendored file untouched.
+  //
+  // send_offer binds this method when it builds the Transfer, so the override
+  // has to be installed before send_offer runs.
+  //
+  // One wrinkle: Transfer.send() calls its send function and throws the result
+  // away — fine while that result was always an already-resolved promise, but
+  // ours resolves only on ZACK. So the in-flight wait is also parked on the
+  // session, where sendChunk() below can await it.
+  // A ZACK carries the receiver's file offset, but zmodem.js models ZACK as a
+  // plain Header rather than a ZOffsetHeader ("we really need this header only
+  // to respond to ZSINIT"), so there is no get_offset() to call. Unpack the
+  // four payload bytes directly, and return null if the shape is not what we
+  // expect rather than inventing a number the caller would then trust.
+  function readAckOffset(hdr) {
+    const b = hdr && hdr._bytes4;
+    if (!b || b.length < 4) return null;
+    return ((b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0);
+  }
+
+  function applyWindowedSend(zsession, windowSize) {
+    if (!windowSize) return;
+    let unacked = 0;
+    let sentTotal = 0;
+    let pending = Promise.resolve();
+
+    zsession._windowDrain = () => pending;
+    // How far the receiver has actually confirmed. handleSend checks this
+    // against the file size instead of trusting the post-ZEOF ZRINIT.
+    // A bare ZACK carries a zero offset (zmodem.js defaults _bytes4 to four
+    // zero bytes and not every receiver fills it in), so the count is the
+    // reliable signal and the offset only corroborates when it is non-zero.
+    zsession._ackedOffset = 0;
+    zsession._ackCount = 0;
+    // Set by handleSend for the last slice of the file.
+    zsession._ackFinalPiece = false;
+
+    zsession._send_interim_file_piece = function (bytesObj) {
+      const sess = this;
+      let offset = 0;
+
+      const step = () => {
+        if (offset >= bytesObj.length) return Promise.resolve();
+
+        // Never overshoot the window, however the caller happens to chunk.
+        const take = Math.min(windowSize - unacked, bytesObj.length - offset);
+        const slice = bytesObj.slice(offset, offset + take);
+        offset += take;
+        unacked += take;
+        sentTotal += take;
+
+        // Close the frame when the window fills — and always on the file's last
+        // slice, even if the window never filled. Without that second case a
+        // file smaller than the advertised window goes out wholly
+        // unacknowledged: zmodem.js sends every subpacket ZCRCG and the final
+        // one ZCRCE, both "no ack" ("Sender opens the firehose … all ZCRCG
+        // until the end, when we send a ZCRCE"). The sender then holds no
+        // evidence that a single byte arrived, and the only thing it waits for
+        // is a ZRINIT after ZEOF — which is byte-identical to the ZRINIT a
+        // receiver sends when it has given up and re-announced itself. A
+        // transfer that landed nowhere therefore reports success. One ZACK
+        // before ZEOF is what makes the two cases distinguishable.
+        const lastOfFile = sess._ackFinalPiece && offset >= bytesObj.length;
+        if (unacked < windowSize && !lastOfFile) {
+          sess._send_file_part(slice, 'no_end_no_ack'); // ZCRCG, keep streaming
+          return step();
+        }
+
+        // Register the handler before sending: on a fast link the ZACK can come
+        // back synchronously, and an unhandled header makes zmodem.js throw.
+        const acked = new Promise((resolve, reject) => {
+          sess._next_header_handler = {
+            ZACK: hdr => {
+              const off = readAckOffset(hdr);
+              if (off !== null) sess._ackedOffset = off;
+              sess._ackCount++;
+              resolve();
+            },
+            // The receiver rewinds to an offset when a frame fails its CRC. We
+            // stream straight from the caller's buffer and keep nothing to
+            // replay, so report it rather than silently truncating the file.
+            ZRPOS: hdr => reject(new Error(
+              'receiver asked to resume at offset ' + hdr.get_offset() + '; cannot rewind'
+            )),
+            ZRINIT: () => reject(new Error('receiver ended the transfer early')),
+          };
+        });
+
+        sess._send_file_part(slice, 'end_ack'); // ZCRCW
+        // ZCRCW closes the frame, so the next subpacket needs a fresh ZDATA
+        // header carrying the offset we have reached.
+        sess._sent_ZDATA = false;
+
+        return acked.then(() => { unacked = 0; return step(); });
+      };
+
+      pending = step();
+      return pending;
+    };
+  }
+
+  // Hands one chunk to the transfer and waits for the sender to be ready for
+  // the next. Transfer.send() is synchronous and returns nothing, so awaiting
+  // it directly paces nothing; a windowed session parks its ZACK wait on the
+  // session and that is what actually has to be awaited.
+  function sendChunk(zsession, xfer, slice) {
+    xfer.send(slice);
+    return zsession._windowDrain ? zsession._windowDrain() : Promise.resolve();
+  }
+
+  // Describes a hex header as the peer actually sent it: the four data bytes,
+  // and for a ZRINIT the receive-buffer size it is asking us to respect. The
+  // terminal only ever shows the post-rewrite bytes, so a receiver that wants
+  // windowing is otherwise indistinguishable from a streaming one. Returns null
+  // when the chunk is not a parseable header. Diagnostic only — nothing
+  // downstream reads the result.
+  function describeHeader(label, chunk) {
+    const H = 4; // past "**<ZDLE>B"
+    if (chunk.length < H + 10) return null;
+    const b = [];
+    for (let i = 0; i < 5; i++) {
+      const hi = hexVal(chunk[H + i * 2]);
+      const lo = hexVal(chunk[H + i * 2 + 1]);
+      if (hi < 0 || lo < 0) return null;
+      b.push((hi << 4) | lo);
+    }
+    const hex = Array.from(chunk).map(v => v.toString(16).padStart(2, '0')).join(' ');
+    // ZP0 is the low byte of the advertised buffer size, ZP1 the high byte.
+    const bufsize = b[1] | (b[2] << 8);
+    return `[zmodem] ${label} buffer=${bufsize}` +
+      (bufsize ? ` (windowed receiver - pacing sends to ${bufsize} bytes/ZACK)` : ' (streaming)') +
+      ` flags=0x${b[4].toString(16)} raw=<${hex}>`;
+  }
+
   function createZmodemBridge({ ws, term, config, checkModemState, flashLed }) {
     let session = null;
     let idleTimer = null;
@@ -169,6 +337,8 @@
     // it has, a stray ZRQINIT is a retransmit of this same session's start; once
     // it has, a ZRQINIT means the *next* file is beginning.
     let sessionSawOffer = false;
+    // Receive window the BBS last advertised, read before we rewrite it away.
+    let receiverWindow = 0;
 
     function armTimeout() {
       clearTimeout(idleTimer);
@@ -247,6 +417,13 @@
     // Single entry point into the Sentry, so a ZRQINIT is always classified
     // against the current session state no matter which path delivered it.
     function feed(chunk) {
+      // The receiver's cancel. It reaches the terminal as a run of CP437 arrows
+      // and reads as line noise; name it so a pasted session says who gave up.
+      let cans = 0;
+      for (const b of chunk) {
+        if (b === 0x18 && ++cans >= 5) { trace('receiver sent CAN*8 - it cancelled the transfer'); break; }
+        if (b !== 0x18) cans = 0;
+      }
       if (session && session.type === 'receive' && isZrqinitHeader(chunk)) {
         // Before the offer arrives, a ZRQINIT is the sender re-announcing this
         // same session (it hasn't seen our ZRINIT yet) — drop it, or zmodem.js
@@ -261,8 +438,46 @@
       // Make any ZRINIT palatable to zmodem.js before it reaches the Sentry,
       // whether we're detecting an upload or the receiver is re-announcing
       // between files during one.
-      if (isZrinitHeader(chunk)) chunk = neutralizeZrinitBuffer(chunk);
-      if (chunk.length > 0) sentry.consume(chunk);
+      if (isZrinitHeader(chunk)) {
+        // Read the window before the rewrite destroys it. Only a non-zero
+        // figure updates it: a receiver re-announcing itself mid-exchange (the
+        // ZRINIT that answers our ZSINIT) may report 0, and dropping back to
+        // firehose halfway through is the failure this exists to prevent.
+        const win = readZrinitWindow(chunk);
+        if (win > 0) receiverWindow = win;
+        // The terminal copy is what makes this diagnosable: a failed transfer
+        // gets reported by pasting the session text, and the rewritten header
+        // there looks identical whatever the BBS actually asked for.
+        const desc = describeHeader('ZRINIT', chunk);
+        if (desc) {
+          console.log(desc);
+          term.write('\r\n' + desc + '\r\n');
+        }
+        chunk = adaptZrinitForSender(chunk);
+      }
+      if (chunk.length === 0) return;
+      try {
+        sentry.consume(chunk);
+      } catch (err) {
+        // zmodem.js throws on any header its current handler does not list, and
+        // a receiver that repeats its ZRINIT while we wait for ZRPOS is enough
+        // to trigger it (lrzsz does exactly that when it does not like an
+        // offer). The throw escapes bridge.consume() into the WebSocket message
+        // handler, where nothing catches it — so the bridge stops pumping bytes
+        // and the terminal goes dead with nothing on screen to say why, which
+        // looks identical to the BBS having hung up.
+        //
+        // Report it and reset instead. This does not make the transfer succeed;
+        // it turns a silent death into a stated failure and leaves the terminal
+        // usable.
+        trace(`protocol error: ${err && err.message ? err.message : err}`);
+        const hadSession = session !== null;
+        disarmTimeout();
+        session = null;
+        sessionSawOffer = false;
+        sentry = makeSentry();
+        if (hadSession) window.ZmodemUI.endXfer({ status: 'aborted' });
+      }
     }
 
     // Abandon the current receive session and start clean. The stale session's
@@ -362,7 +577,11 @@
           try { detection.deny(); } catch (e) { /* nothing left to abort */ }
           return undefined;
         }
-        return handleSend(confirmSession(detection), files);
+        const zsession = confirmSession(detection);
+        // Must happen before send_offer, which binds the send method into the
+        // Transfer it hands back.
+        applyWindowedSend(zsession, receiverWindow);
+        return handleSend(zsession, files);
       }).catch(err => {
         pendingSend = null;
         uploadPrompt = null;
@@ -372,7 +591,20 @@
       });
     }
 
+    // Upload progress narration. An upload that fails against a real BBS is
+    // reported by pasting the session text, and until it says otherwise every
+    // failure looks identical there: the ZRINIT, then the receiver's CAN*8.
+    // Outbound headers are never echoed and in-session inbound bytes are
+    // consumed rather than displayed, so those two lines sit next to each other
+    // whether the transfer died on the first handshake or after the last byte.
+    // These milestones are what distinguish those cases.
+    function trace(msg) {
+      console.log('[zmodem] ' + msg);
+      term.write('\r\n[zmodem] ' + msg + '\r\n');
+    }
+
     function handleSend(zsession, files) {
+      let stage = 'starting';
       return (async () => {
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
@@ -398,31 +630,87 @@
           // transfer before any data went out.
           const remaining = files.length - i - 1;
           if (remaining > 0) offer.files_remaining = remaining;
+          // The receiver did not ask for ESCCTL, so zmodem.js detours through a
+          // ZSINIT here and blocks until the receiver acknowledges it. That is
+          // the first place a transfer can die without anything reaching the
+          // terminal, so say so before and after.
+          stage = 'sending offer (ZSINIT/ZFILE)';
+          trace(`offering ${file.name} (${file.size} bytes)`);
           const xfer = await zsession.send_offer(offer);
+          stage = 'streaming data';
           if (!xfer) {
-            // BBS skipped this file.
-            window.ZmodemUI.endXfer({ status: 'done' });
+            // send_offer resolves undefined for exactly one reason: the
+            // receiver answered our ZFILE with ZSKIP. That is a refusal, not a
+            // delivery — reporting it as 'done' told the user an upload had
+            // succeeded when the BBS never accepted a byte of it. Searchlight
+            // skips a name it already holds ("Checking for duplicate
+            // filenames..." precedes the offer), so the usual cause is that the
+            // file is already there from an earlier attempt.
+            trace(`receiver REFUSED ${file.name} (ZSKIP) - it was not uploaded. ` +
+              'A BBS commonly skips a filename it already has; try a different name.');
+            window.ZmodemUI.surfaceError(`${file.name}: refused by the BBS (already there?)`);
+            window.ZmodemUI.endXfer({ status: 'skipped' });
             continue;
           }
-          // Chunk into 4 KB blocks to keep progress smooth.
-          const CHUNK = 4096;
+          trace('offer accepted (ZRPOS), sending data');
+          // One ZMODEM data subpacket per slice, capped at the 1 KiB the
+          // protocol actually specifies. zmodem.js's own constant spells out
+          // the hazard — `MAX_CHUNK_LENGTH = 8192, //1 KiB officially, but
+          // lrzsz allows 8192` — and we were handing it 4 KB slices, so every
+          // subpacket was four times the legal maximum. lrzsz accepts them,
+          // which is why every test against `rz` passed. Searchlight BBS 5.1
+          // (DOS, 1999) does not: it answers the ZEOF with `ZRPOS 0` — "start
+          // over" — then retransmits it until the transfer is cancelled, so
+          // the file never lands however many times you try. Content makes no
+          // difference; ANSI, ZIP and plain ASCII all failed identically.
+          //
+          // 1 KiB costs a little CRC overhead and nothing else.
+          const CHUNK = 1024;
           for (let off = 0; off < buf.length; off += CHUNK) {
             const slice = buf.subarray(off, Math.min(off + CHUNK, buf.length));
-            await xfer.send(slice);
+            // Make the final slice an acknowledged one, so a windowed receiver
+            // has to tell us how much it really has before we send ZEOF.
+            zsession._ackFinalPiece = off + CHUNK >= buf.length;
+            await sendChunk(zsession, xfer, slice);
             currentXferBytes = off + slice.length;
             const elapsed = (performance.now() - currentXferStart) / 1000;
             const cps = elapsed > 0 ? currentXferBytes / elapsed : 0;
             window.ZmodemUI.updateXfer({ bytes: currentXferBytes, cps });
             armTimeout();
           }
+
+          // Only meaningful for a windowed receiver; a streaming one never
+          // acknowledges anything mid-file and there is nothing to check.
+          if (receiverWindow > 0) {
+            const confirmed = zsession._ackedOffset;
+            if (!zsession._ackCount) {
+              throw new Error('receiver never acknowledged any of the data');
+            }
+            // Only a receiver that reported a real offset can contradict us.
+            if (confirmed > 0 && confirmed !== buf.length) {
+              throw new Error(
+                `receiver confirmed ${confirmed} of ${buf.length} bytes — the file did not arrive intact`
+              );
+            }
+            trace(confirmed > 0
+              ? `receiver confirmed all ${confirmed} bytes`
+              : `receiver acknowledged the closing frame (${buf.length} bytes)`);
+          }
+
+          stage = 'waiting for ZEOF acknowledgement';
+          trace(`all ${buf.length} bytes sent, waiting for the receiver`);
           await xfer.end();
+          trace('receiver acknowledged the file');
           window.ZmodemUI.endXfer({ status: 'done' });
         }
         disarmTimeout();
+        stage = 'closing session (ZFIN)';
         try { await zsession.close(); } catch (e) { /* nop */ }
+        trace('session closed cleanly');
       })().catch(err => {
         disarmTimeout();
         console.error('ZMODEM send error', err);
+        trace(`FAILED while ${stage}: ${err && err.message ? err.message : err}`);
         window.ZmodemUI.endXfer({ status: 'aborted' });
         try { zsession.abort(); } catch (e) { /* nop */ }
       });

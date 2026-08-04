@@ -24,18 +24,25 @@ html, body {
 
 /* --- CRT Monitor --- */
 
+/*
+ * Every dimension of the CRT/modem assembly is expressed as a multiple of
+ * `--u`, so the whole thing scales from the single `--crt-scale` value that
+ * app.js fits to the viewport. The terminal itself is not transform-scaled —
+ * app.js raises xterm's font size by the same factor, so glyphs stay rasterized
+ * at native resolution instead of being blurrily upscaled.
+ */
 .crt-container {
+  --crt-scale: 1;
+  --u: calc(var(--crt-scale) * 1px);
   display: flex;
   flex-direction: column;
   align-items: center;
-  transform: scale(1.3);
-  transform-origin: center center;
 }
 
 .crt-monitor {
   background: linear-gradient(170deg, #303035 0%, #222225 50%, #1a1a1d 100%);
-  border-radius: 18px;
-  padding: 28px 32px 0;
+  border-radius: calc(18 * var(--u));
+  padding: calc(28 * var(--u)) calc(32 * var(--u)) 0;
   box-shadow:
     0 25px 80px rgba(0, 0, 0, 0.7),
     0 5px 20px rgba(0, 0, 0, 0.5),
@@ -48,8 +55,8 @@ html, body {
 .crt-screen {
   position: relative;
   background: #0a0a0a;
-  border-radius: 10px;
-  padding: 12px;
+  border-radius: calc(10 * var(--u));
+  padding: calc(12 * var(--u));
   box-shadow:
     inset 0 0 20px rgba(0, 0, 0, 0.8),
     inset 0 0 4px rgba(0, 0, 0, 0.9);
@@ -67,10 +74,10 @@ html, body {
   border-radius: inherit;
   background: repeating-linear-gradient(
     0deg,
-    transparent 0px,
-    transparent 1px,
-    rgba(0, 0, 0, 0.04) 1px,
-    rgba(0, 0, 0, 0.04) 2px
+    transparent 0,
+    transparent var(--u),
+    rgba(0, 0, 0, 0.04) var(--u),
+    rgba(0, 0, 0, 0.04) calc(2 * var(--u))
   );
   pointer-events: none;
   z-index: 10;
@@ -112,13 +119,13 @@ html, body {
 .crt-chin {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 8px 14px;
+  gap: calc(10 * var(--u));
+  padding: calc(12 * var(--u)) calc(8 * var(--u)) calc(14 * var(--u));
 }
 
 .crt-led {
-  width: 6px;
-  height: 6px;
+  width: calc(6 * var(--u));
+  height: calc(6 * var(--u));
   border-radius: 50%;
   background: #0f0;
   box-shadow: 0 0 4px #0f0, 0 0 8px rgba(0, 255, 0, 0.3);
@@ -127,39 +134,39 @@ html, body {
 .crt-brand {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: calc(6 * var(--u));
 }
 
 .crt-brand-name {
   font-family: 'PxPlus IBM VGA 8x16', monospace;
-  font-size: 13px;
+  font-size: calc(13 * var(--u));
   font-weight: bold;
   color: #6a6a6a;
-  letter-spacing: 3px;
+  letter-spacing: calc(3 * var(--u));
   text-transform: uppercase;
 }
 
 .crt-brand-maker {
   font-family: 'PxPlus IBM VGA 8x16', monospace;
-  font-size: 9px;
+  font-size: calc(9 * var(--u));
   color: #4a4a4a;
-  letter-spacing: 1px;
+  letter-spacing: var(--u);
 }
 
 /* --- Stand --- */
 
 .crt-stand-neck {
-  width: 60px;
-  height: 25px;
+  width: calc(60 * var(--u));
+  height: calc(25 * var(--u));
   background: linear-gradient(180deg, #1a1a1d, #252528);
   clip-path: polygon(10% 0%, 90% 0%, 100% 100%, 0% 100%);
 }
 
 .crt-stand-base {
-  width: 180px;
-  height: 10px;
+  width: calc(180 * var(--u));
+  height: calc(10 * var(--u));
   background: linear-gradient(180deg, #2a2a2d, #1e1e21);
-  border-radius: 0 0 4px 4px;
+  border-radius: 0 0 calc(4 * var(--u)) calc(4 * var(--u));
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
 
@@ -167,22 +174,22 @@ html, body {
 
 .modem {
   align-self: stretch;
-  margin-top: 20px;
+  margin-top: calc(20 * var(--u));
 }
 
 .modem-top {
-  height: 10px;
+  height: calc(10 * var(--u));
   background: linear-gradient(180deg, #38383b, #2d2d30);
-  border-radius: 3px 3px 0 0;
+  border-radius: calc(3 * var(--u)) calc(3 * var(--u)) 0 0;
 }
 
 .modem-front {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 7px 20px 9px;
+  padding: calc(7 * var(--u)) calc(20 * var(--u)) calc(9 * var(--u));
   background: linear-gradient(180deg, #2a2a2d, #1e1e21);
-  border-radius: 0 0 3px 3px;
+  border-radius: 0 0 calc(3 * var(--u)) calc(3 * var(--u));
   box-shadow:
     0 4px 16px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -190,28 +197,28 @@ html, body {
 
 .modem-leds {
   display: flex;
-  gap: 14px;
+  gap: calc(14 * var(--u));
 }
 
 .modem-led {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--u));
 }
 
 .modem-led-label {
   font-family: Arial, Helvetica, sans-serif;
-  font-size: 8px;
+  font-size: calc(8 * var(--u));
   font-weight: bold;
   color: #555;
-  letter-spacing: 0.5px;
+  letter-spacing: calc(0.5 * var(--u));
   user-select: none;
 }
 
 .modem-led-light {
-  width: 5px;
-  height: 5px;
+  width: calc(5 * var(--u));
+  height: calc(5 * var(--u));
   border-radius: 50%;
   background: #162016;
   transition: background 0.05s, box-shadow 0.05s;
@@ -233,9 +240,9 @@ html, body {
   background: none;
   border: none;
   cursor: pointer;
-  padding: 2px 6px;
+  padding: calc(2 * var(--u)) calc(6 * var(--u));
   margin-left: auto;
-  margin-right: 8px;
+  margin-right: calc(8 * var(--u));
   opacity: 0.5;
   transition: opacity 0.15s;
 }
@@ -245,7 +252,7 @@ html, body {
 }
 
 .modem-mute-icon {
-  font-size: 14px;
+  font-size: calc(14 * var(--u));
   line-height: 1;
 }
 
@@ -253,22 +260,22 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 1px;
+  gap: var(--u);
 }
 
 .modem-brand-name {
   font-family: Arial, Helvetica, sans-serif;
-  font-size: 11px;
+  font-size: calc(11 * var(--u));
   font-weight: bold;
   color: #555;
-  letter-spacing: 1px;
+  letter-spacing: var(--u);
 }
 
 .modem-brand-model {
   font-family: Arial, Helvetica, sans-serif;
-  font-size: 9px;
+  font-size: calc(9 * var(--u));
   color: #444;
-  letter-spacing: 2px;
+  letter-spacing: calc(2 * var(--u));
   text-transform: uppercase;
 }
 
@@ -282,36 +289,27 @@ html, body {
   scrollbar-width: none;
 }
 
-/* --- Responsive scaling --- */
-
-@media (max-height: 900px), (max-width: 1100px) {
-  .crt-container {
-    transform: scale(1.0);
-  }
-}
-
-@media (max-height: 650px), (max-width: 800px) {
-  .crt-container {
-    transform: scale(0.75);
-  }
-}
+/*
+ * Responsive scaling is driven by app.js (`--crt-scale`), which fits the
+ * assembly to the viewport continuously rather than in fixed breakpoint steps.
+ */
 
 /* -------- Transfer status strip (LCD panel style) -------- */
 
 .modem-xfer {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
+  gap: calc(8 * var(--u));
+  padding: calc(4 * var(--u)) calc(10 * var(--u));
   background: #001100;
   color: #55ff55;
   font-family: 'PxPlus IBM VGA 8x16', monospace;
-  font-size: 12px;
+  font-size: calc(12 * var(--u));
   border: 1px solid #003300;
-  border-radius: 3px;
+  border-radius: calc(3 * var(--u));
   box-shadow: inset 0 0 8px rgba(85, 255, 85, 0.15);
   text-shadow: 0 0 3px rgba(85, 255, 85, 0.4);
-  min-width: 380px;
+  min-width: calc(380 * var(--u));
 }
 
 .modem-xfer[hidden] {
@@ -325,7 +323,7 @@ html, body {
 
 .modem-xfer-name {
   flex: 1;
-  min-width: 80px;
+  min-width: calc(80 * var(--u));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -339,8 +337,8 @@ html, body {
 .modem-xfer-bar {
   position: relative;
   display: inline-block;
-  width: 120px;
-  height: 10px;
+  width: calc(120 * var(--u));
+  height: calc(10 * var(--u));
   background: #003300;
   border: 1px solid #005500;
 }

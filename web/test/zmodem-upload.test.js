@@ -217,6 +217,280 @@ test('per-file sessions without ZFIN still deliver every file', async () => {
   }
 });
 
+// Builds a ZRINIT advertising `bufsize` bytes of receive window, the way
+// Searchlight BBS and DOS ZMODEM generally do. ZP0 is the low byte, ZP1 the
+// high byte; flags 0x23 is CANFDX|CANOVIO|CANFC32.
+function zrinitWithWindow(g, bufsize) {
+  const data = [0x01, bufsize & 0xff, (bufsize >> 8) & 0xff, 0x00, 0x23];
+  const hex = g.Zmodem.ENCODELIB.octets_to_hex(data.concat(g.Zmodem.CRC.crc16(data)));
+  return Uint8Array.from([0x2a, 0x2a, 0x18, 0x42, ...hex, 0x0d, 0x0a, 0x11]);
+}
+
+const wireBytes = sent => sent.reduce((n, b) => n + b.length, 0);
+
+// Resolves once the sender has stopped emitting — i.e. it is blocked waiting on
+// us. That pause is the whole behaviour under test, so it is the signal we key
+// on rather than a fixed sleep.
+async function quiesce(sent) {
+  let last = -1;
+  for (let i = 0; i < 200 && wireBytes(sent) !== last; i++) {
+    last = wireBytes(sent);
+    await new Promise(r => setTimeout(r, 10));
+  }
+  return wireBytes(sent);
+}
+
+// A receiver that advertises a window expects the sender to stop every
+// `bufsize` bytes and wait for a ZACK. zmodem.js cannot do that — it streams
+// ZCRCG subpackets until the file runs out — and because we rewrite the ZRINIT
+// to get past its "Buffer size is unsupported" check, nothing else paces the
+// send either. Searchlight BBS answers the resulting burst with CAN*8 and drops
+// carrier, while the browser still reports 100% because progress counts bytes
+// handed to zmodem.js rather than bytes acknowledged.
+test('a windowed receiver is paced to its window instead of firehosed', async () => {
+  const g = loadSandbox();
+  const Z = g.Zmodem;
+  const WINDOW = 8192;
+  const SIZE = WINDOW * 5;
+
+  const sent = [];
+  // Printable bytes keep ZDLE escaping out of the wire-size arithmetic below.
+  const payload = Array.from({ length: SIZE }, (_, i) => 0x41 + (i % 26));
+  const { bridge, events, offer } = makeBridge(g, {
+    files: [fakeFile('BANNER.ANS', payload)],
+    onSend: b => sent.push(b),
+  });
+  const respond = octets => bridge.consume(Uint8Array.from(octets));
+
+  bridge.consume(zrinitWithWindow(g, WINDOW));
+  offer();
+
+  // The receiver did not offer ESCCTL, so zmodem.js detours through a ZSINIT
+  // and waits for a ZACK before it will send the offer.
+  await quiesce(sent);
+  respond(Z.Header.build('ZACK').to_hex());
+  await quiesce(sent);
+  const beforeData = wireBytes(sent);
+  respond(Z.Header.build('ZRPOS', 0).to_hex());
+
+  // First window: the sender must stop here, not run to the end of the file.
+  let prev = beforeData;
+  const bursts = [(await quiesce(sent)) - prev];
+  assert.ok(
+    bursts[0] < SIZE,
+    `sender firehosed the whole ${SIZE}-byte file without waiting for a ZACK`
+  );
+
+  // Release the remaining windows one ZACK at a time. The last ZACK frees the
+  // sender to emit its closing ZDATA/ZEOF, so there is one round per window.
+  for (let i = 0; i < SIZE / WINDOW; i++) {
+    prev = wireBytes(sent);
+    respond(Z.Header.build('ZACK').to_hex());
+    bursts.push((await quiesce(sent)) - prev);
+  }
+
+  // Every data burst must sit at the window, not just the first — a sender that
+  // paced once and then opened up would still drown the receiver.
+  const dataBursts = bursts.filter(n => n > WINDOW / 2);
+  assert.strictEqual(
+    dataBursts.length, SIZE / WINDOW,
+    `expected ${SIZE / WINDOW} windows of ~${WINDOW} bytes, got ${JSON.stringify(bursts)}`
+  );
+  for (const n of dataBursts) {
+    assert.ok(
+      n < WINDOW * 1.5,
+      `a burst of ${n} bytes overran the ${WINDOW}-byte window: ${JSON.stringify(bursts)}`
+    );
+  }
+
+  // ZEOF waits on a ZRINIT, then close() sends ZFIN and waits for the peer's.
+  respond(Z.Header.build('ZRINIT', ['CANFDX', 'CANOVIO', 'CANFC32']).to_hex());
+  await quiesce(sent);
+  respond(Z.Header.build('ZFIN').to_hex());
+  await quiesce(sent);
+
+  assert.ok(
+    !events.some(e => e[0] === 'error' || (e[0] === 'endXfer' && e[1] === 'aborted')),
+    `transfer did not survive windowed pacing: ${JSON.stringify(events)}`
+  );
+  assert.ok(
+    events.some(e => e[0] === 'endXfer' && e[1] === 'done'),
+    `expected the upload to finish, got ${JSON.stringify(events)}`
+  );
+  assert.ok(
+    wireBytes(sent) >= SIZE,
+    `only ${wireBytes(sent)} bytes reached the wire for a ${SIZE}-byte file`
+  );
+});
+
+// Pacing alone still left a hole, and it is the one the real BBS fell into: a
+// file *smaller* than the advertised window never fills it, so the loop above
+// never closes a frame and the whole file goes out unacknowledged — every
+// subpacket ZCRCG, the closing one ZCRCE, both "no ack". The sender's only
+// evidence of delivery was then the ZRINIT it waits for after ZEOF, and that is
+// byte-identical to the ZRINIT a receiver re-announces when it has given up. So
+// a 4279-byte upload that landed nowhere reported "receiver acknowledged the
+// file / session closed cleanly" with the browser sitting at 100%.
+const SHORT_FILE = 4279; // the size from the failing Searchlight session
+
+function shortFileBridge(g) {
+  const sent = [];
+  const made = makeBridge(g, {
+    files: [fakeFile('BORING.ANS', Array.from({ length: SHORT_FILE }, (_, i) => 0x41 + (i % 26)))],
+    onSend: b => sent.push(b),
+  });
+  return { ...made, sent, respond: octets => made.bridge.consume(Uint8Array.from(octets)) };
+}
+
+// Drives the exchange to the point where the whole short file has been sent.
+async function sendShortFile(g, h) {
+  h.bridge.consume(zrinitWithWindow(g, 8192));
+  h.offer();
+  await quiesce(h.sent);
+  h.respond(g.Zmodem.Header.build('ZACK').to_hex()); // acknowledges our ZSINIT
+  await quiesce(h.sent);
+  h.respond(g.Zmodem.Header.build('ZRPOS', 0).to_hex());
+  await quiesce(h.sent);
+}
+
+test('a short file is not reported as sent when the receiver never acknowledges it', async () => {
+  const g = loadSandbox();
+  const h = shortFileBridge(g);
+  await sendShortFile(g, h);
+
+  // The receiver acknowledges nothing and simply repeats the ZRINIT it opened
+  // with — the exact shape of the failing BBS session.
+  h.respond(zrinitWithWindow(g, 8192));
+  await quiesce(h.sent);
+  h.respond(g.Zmodem.Header.build('ZFIN').to_hex());
+  await quiesce(h.sent);
+
+  assert.ok(
+    !h.events.some(e => e[0] === 'endXfer' && e[1] === 'done'),
+    `an unacknowledged upload reported success: ${JSON.stringify(h.events)}`
+  );
+});
+
+// send_offer resolves undefined for exactly one reason — the receiver answered
+// the ZFILE with ZSKIP, i.e. refused the file. Reporting that as 'done' claimed
+// an upload had succeeded when nothing was sent at all; Searchlight skips a
+// filename it already holds, so this is what a repeat attempt looks like.
+test('a refused offer (ZSKIP) is not reported as a completed upload', async () => {
+  const g = loadSandbox();
+  const h = shortFileBridge(g);
+
+  h.bridge.consume(zrinitWithWindow(g, 8192));
+  h.offer();
+  await quiesce(h.sent);
+  h.respond(g.Zmodem.Header.build('ZACK').to_hex()); // acknowledges our ZSINIT
+  await quiesce(h.sent);
+  h.respond(g.Zmodem.Header.build('ZSKIP').to_hex());
+  await quiesce(h.sent);
+
+  assert.ok(
+    !h.events.some(e => e[0] === 'endXfer' && e[1] === 'done'),
+    `a refused file reported success: ${JSON.stringify(h.events)}`
+  );
+  assert.ok(
+    h.events.some(e => e[0] === 'endXfer' && e[1] === 'skipped'),
+    `expected the refusal to be surfaced, got ${JSON.stringify(h.events)}`
+  );
+});
+
+test('a short file completes once the receiver acknowledges the closing frame', async () => {
+  const g = loadSandbox();
+  const h = shortFileBridge(g);
+  await sendShortFile(g, h);
+
+  h.respond(g.Zmodem.Header.build('ZACK').to_hex()); // closes the ZCRCW frame
+  await quiesce(h.sent);
+  h.respond(g.Zmodem.Header.build('ZRINIT', ['CANFDX', 'CANOVIO', 'CANFC32']).to_hex());
+  await quiesce(h.sent);
+  h.respond(g.Zmodem.Header.build('ZFIN').to_hex());
+  await quiesce(h.sent);
+
+  assert.ok(
+    h.events.some(e => e[0] === 'endXfer' && e[1] === 'done'),
+    `acknowledged upload did not finish: ${JSON.stringify(h.events)}`
+  );
+});
+
+// The contrast case: a receiver advertising buffer 0 really does want the
+// firehose, and must not be slowed to a ZACK round-trip per window.
+test('a streaming receiver is not paced', async () => {
+  const g = loadSandbox();
+  const Z = g.Zmodem;
+  const SIZE = 8192 * 3;
+
+  const sent = [];
+  const { bridge, offer } = makeBridge(g, {
+    files: [fakeFile('BANNER.ANS', Array.from({ length: SIZE }, (_, i) => 0x41 + (i % 26)))],
+    onSend: b => sent.push(b),
+  });
+  const respond = octets => bridge.consume(Uint8Array.from(octets));
+
+  bridge.consume(zrinitWithWindow(g, 0));
+  offer();
+  await quiesce(sent);
+  respond(Z.Header.build('ZACK').to_hex());
+  await quiesce(sent);
+  const beforeData = wireBytes(sent);
+  respond(Z.Header.build('ZRPOS', 0).to_hex());
+
+  const emitted = (await quiesce(sent)) - beforeData;
+  assert.ok(
+    emitted >= SIZE,
+    `streaming receiver should get all ${SIZE} bytes without a ZACK, got ${emitted}`
+  );
+});
+
+// ZMODEM data subpackets are 1 KiB in the specification. zmodem.js allows 8192
+// because lrzsz does, and we were slicing at 4 KB — four times the legal
+// maximum. Searchlight BBS 5.1 answers an over-long frame's ZEOF with ZRPOS 0
+// ("start over") and loops there until the transfer is cancelled, so the upload
+// never completes no matter the file. Verified against the real BBS: 4 KB
+// slices fail every time, 1 KiB slices are accepted.
+test('data subpackets stay within the 1 KiB the protocol specifies', async () => {
+  const g = loadSandbox();
+  const Z = g.Zmodem;
+  const SIZE = 16384;
+
+  const sent = [];
+  // A payload of one never-escaped byte keeps ZDLE sequences out of the data,
+  // so every ZDLE + frame-end byte on the wire is a real subpacket terminator.
+  const { bridge, offer } = makeBridge(g, {
+    files: [fakeFile('BANNER.ANS', new Array(SIZE).fill(0x41))],
+    onSend: b => sent.push(b),
+  });
+  const respond = octets => bridge.consume(Uint8Array.from(octets));
+
+  bridge.consume(zrinitWithWindow(g, 0)); // streaming, so nothing else paces us
+  offer();
+  await quiesce(sent);
+  respond(Z.Header.build('ZACK').to_hex());
+  await quiesce(sent);
+  const start = wireBytes(sent);
+  respond(Z.Header.build('ZRPOS', 0).to_hex());
+  await quiesce(sent);
+
+  // The payload byte is never escaped and never appears in a header, so the
+  // longest run of it on the wire is exactly the largest subpacket payload —
+  // no framing arithmetic to get wrong.
+  const wire = Buffer.concat(sent).subarray(start);
+  let longest = 0;
+  let run = 0;
+  for (const b of wire) {
+    if (b === 0x41) { run++; if (run > longest) longest = run; }
+    else run = 0;
+  }
+  assert.ok(longest > 0, 'expected file data on the wire');
+  assert.strictEqual(
+    longest, 1024,
+    `longest data subpacket was ${longest} bytes; the protocol caps them at 1024 ` +
+    `and Searchlight answers anything larger with ZRPOS 0`
+  );
+});
+
 // DSZ/GSZ (and most DOS ZMODEM) advertise a non-zero receive buffer in ZRINIT.
 // zmodem.js only supports streaming receivers (buffer 0) and throws
 // "Buffer size unsupported" on the rest — swallowed by the Sentry, so the

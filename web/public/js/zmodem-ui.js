@@ -74,6 +74,12 @@
       strip.classList.add('state-timeout');
       name.textContent = '✕ TIMEOUT';
       scheduleHide(2000);
+    } else if (status === 'skipped') {
+      // The receiver refused the file (ZSKIP). Nothing was transferred, so this
+      // must not read as a completed upload.
+      strip.classList.add('state-aborted');
+      name.textContent = '⊘ REFUSED';
+      scheduleHide(2000);
     }
   }
 

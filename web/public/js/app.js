@@ -48,6 +48,83 @@ document.addEventListener('DOMContentLoaded', () => {
 
   term.open(document.getElementById('terminal'));
 
+  // --- Fluid sizing ---
+  // The grid stays 80x24 — BBS ANSI art is authored for 80 columns — so filling
+  // the window means growing the cell, not adding columns. This owns the scale
+  // for the whole assembly: `--crt-scale` sizes the CRT and modem chrome (see
+  // terminal.css) and xterm's font size moves with it, so glyphs are rasterized
+  // at their final size rather than upscaled from a 16px canvas.
+  const crtContainer = document.querySelector('.crt-container');
+  const BASE_FONT_SIZE = 16;
+  const VIEWPORT_FILL = 0.9;
+  const MIN_FONT_SIZE = 6; // below this the window is too small to be usable anyway
+  let cellFontSize = BASE_FONT_SIZE;
+  let fitFrame = 0;
+
+  function applyFontSize(size) {
+    cellFontSize = size;
+    crtContainer.style.setProperty('--crt-scale', String(size / BASE_FONT_SIZE));
+    term.options.fontSize = size;
+  }
+
+  // Measure, correct, repeat. Solving for the size outright would need xterm's
+  // cell metrics, and measuring is both simpler and free of private APIs. Passes
+  // are spread across animation frames because xterm resizes its screen element
+  // on its own schedule after a font-size change.
+  //
+  // Two rules keep this from oscillating. Steps are whole pixels of font size:
+  // the cell metrics xterm derives are integers, so across 24 rows the assembly
+  // height moves in ~24px jumps, and a fractional step can leave it a hair over
+  // the target with no step small enough to correct — the loop then grinds
+  // without converging. And growth stops once a pass has shrunk (`lastDir`),
+  // since that means we have already straddled a step boundary and come down to
+  // the side that fits. Landing up to one step under 90% is the cost of that,
+  // and a whole-pixel size renders the bitmap font cleanly besides.
+  function fitCrt(passes, shrinkOnly, lastDir) {
+    const width = crtContainer.offsetWidth;
+    const height = crtContainer.offsetHeight;
+    if (!width || !height || passes <= 0) return;
+
+    const ratio = Math.min(
+      (window.innerWidth * VIEWPORT_FILL) / width,
+      (window.innerHeight * VIEWPORT_FILL) / height,
+    );
+
+    let next = Math.round(cellFontSize * ratio);
+    if (next === cellFontSize) {
+      if (ratio >= 1) return; // fits, and there is no whole step left to grow
+      next = cellFontSize - 1; // over by less than a step: come down one
+    }
+    next = Math.max(MIN_FONT_SIZE, next);
+
+    const dir = next > cellFontSize ? 1 : -1;
+    if (dir === 1 && (shrinkOnly || lastDir === -1)) return;
+    if (next === cellFontSize) return;
+
+    applyFontSize(next);
+    scheduleFit(passes - 1, shrinkOnly, dir);
+  }
+
+  function scheduleFit(passes = 8, shrinkOnly = false, lastDir = 0) {
+    cancelAnimationFrame(fitFrame);
+    fitFrame = requestAnimationFrame(() => fitCrt(passes, shrinkOnly, lastDir));
+  }
+
+  scheduleFit();
+  window.addEventListener('resize', () => scheduleFit());
+  // The bitmap font lands after first paint and changes the cell size with it.
+  if (document.fonts) document.fonts.ready.then(() => scheduleFit());
+  if (window.ResizeObserver) {
+    // Content can widen the assembly mid-session — the transfer strip stretches
+    // the modem front. Only react when that actually pushes past the target, and
+    // only ever shrink: growing here would change the very size being observed.
+    new ResizeObserver(() => {
+      const overflows = crtContainer.offsetWidth > window.innerWidth * VIEWPORT_FILL
+        || crtContainer.offsetHeight > window.innerHeight * VIEWPORT_FILL;
+      if (overflows) scheduleFit(2, true);
+    }).observe(crtContainer);
+  }
+
   // --- Modem LED panel ---
   const leds = {};
   document.querySelectorAll('.modem-led').forEach(el => {
