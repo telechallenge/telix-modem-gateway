@@ -41,6 +41,11 @@ phonebook:
     port: 2475
     name: "Boringland download"
 
+  - number: "503-294-5966"
+    host: "host.docker.internal"
+    port: 22023
+    name: "Shareware barn"
+
   # Example: number gated by a password. The modem rings and reports CONNECT
   # first, so the prompt (shadow-echoed as '*') looks like the BBS's own login;
   # wrong password -> NO CARRIER without ever touching the remote host.
