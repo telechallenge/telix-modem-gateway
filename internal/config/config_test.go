@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -575,5 +576,153 @@ phonebook:
 	}
 	if !strings.Contains(err.Error(), "host is required") {
 		t.Errorf("error should mention 'host is required', got: %v", err)
+	}
+}
+
+// A busy entry never places a call, so host and port carry nothing — requiring
+// them would force an operator to invent an unreachable host for a number that
+// is only ever engaged.
+func TestLoadConfigBusyEntryNeedsNoHostOrPort(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "telix.yaml")
+	content := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+
+phonebook:
+  - number: "916-555-1212"
+    name: "Engaged BBS"
+    busy: true
+  - number: "916-555-1213"
+    host: "bbs.example.com"
+    port: 23
+    name: "Test BBS"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	engaged := cfg.LookupNumber("916-555-1212")
+	if engaged == nil {
+		t.Fatal("busy entry missing from the phonebook")
+	}
+	if !engaged.Busy {
+		t.Error("busy: true did not survive the load")
+	}
+	if open := cfg.LookupNumber("916-555-1213"); open == nil || open.Busy {
+		t.Errorf("an entry without busy: must not be marked busy, got %+v", open)
+	}
+}
+
+// The metrics port default is load-bearing outside Go: prometheus.yml scrapes
+// telix:9101, so a change here silently breaks scraping rather than failing a
+// build.
+func TestMetricsConfigDefaults(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      MetricsConfig
+		wantPort int
+		wantAddr string
+	}{
+		{
+			name:     "unset port falls back to 9101 and binds all interfaces",
+			cfg:      MetricsConfig{Enabled: true},
+			wantPort: 9101,
+			wantAddr: ":9101",
+		},
+		{
+			name:     "explicit port and bind are used verbatim",
+			cfg:      MetricsConfig{Enabled: true, Port: 9999, Bind: "127.0.0.1"},
+			wantPort: 9999,
+			wantAddr: "127.0.0.1:9999",
+		},
+		{
+			name:     "a zero port is treated as unset rather than as port zero",
+			cfg:      MetricsConfig{Enabled: true, Port: 0, Bind: "0.0.0.0"},
+			wantPort: 9101,
+			wantAddr: "0.0.0.0:9101",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.GetPort(); got != tt.wantPort {
+				t.Errorf("GetPort() = %d, want %d", got, tt.wantPort)
+			}
+			if got := tt.cfg.Addr(); got != tt.wantAddr {
+				t.Errorf("Addr() = %q, want %q", got, tt.wantAddr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigParsesMetricsSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "telix.yaml")
+	content := `
+server:
+  port: 2323
+  max_connections: 100
+  max_per_ip: 3
+metrics:
+  enabled: true
+  port: 9101
+  bind: "0.0.0.0"
+phonebook:
+  - number: "555-1234"
+    host: "bbs.example.com"
+    port: 23
+    name: "Test BBS"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Metrics.Enabled {
+		t.Error("Metrics.Enabled = false, want true")
+	}
+	if got := cfg.Metrics.Addr(); got != "0.0.0.0:9101" {
+		t.Errorf("Metrics.Addr() = %q, want \"0.0.0.0:9101\"", got)
+	}
+}
+
+// A config with no metrics section at all must load and leave metrics off,
+// so an existing deployment's telix.yaml keeps working untouched.
+func TestLoadConfigWithoutMetricsSectionDisablesMetrics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "telix.yaml")
+	content := `
+server:
+  port: 2323
+  max_connections: 100
+  max_per_ip: 3
+phonebook:
+  - number: "555-1234"
+    host: "bbs.example.com"
+    port: 23
+    name: "Test BBS"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Metrics.Enabled {
+		t.Error("Metrics.Enabled = true for a config with no metrics section, want false")
 	}
 }

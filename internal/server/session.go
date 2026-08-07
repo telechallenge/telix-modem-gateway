@@ -15,6 +15,7 @@ import (
 	"telix/internal/config"
 	"telix/internal/dialer"
 	"telix/internal/logging"
+	"telix/internal/metrics"
 	"telix/internal/modem"
 )
 
@@ -113,6 +114,7 @@ type Session struct {
 	modem        *modem.Modem
 	config       *config.Config
 	logger       *logging.SessionLogger
+	metrics      *metrics.Metrics // nil when metrics are disabled; all calls are no-ops
 	dialer       *dialer.Dialer
 	remoteIP     string
 	clientFilter *dialer.TelnetFilter // filters telnet commands from the client
@@ -131,8 +133,10 @@ type Session struct {
 	done chan struct{}
 }
 
-// NewSession creates a new session
-func NewSession(conn net.Conn, cfg *config.Config, logger *logging.Logger) *Session {
+// NewSession creates a new session. art supplies the connect banner when a
+// directory of ANSI art is mounted; a nil art, or one with nothing to draw,
+// falls back to the built-in banner.
+func NewSession(conn net.Conn, cfg *config.Config, logger *logging.Logger, art *bannerArt) *Session {
 	remoteAddr := conn.RemoteAddr().String()
 	// Extract IP without port
 	host, _, _ := net.SplitHostPort(remoteAddr)
@@ -155,8 +159,10 @@ func NewSession(conn net.Conn, cfg *config.Config, logger *logging.Logger) *Sess
 		dialer:       dialer.New(timeout, cfg.Dialer.ParsedNetworks()),
 		remoteIP:     host,
 		clientFilter: dialer.NewTelnetFilter(),
-		banner:       buildBanner(cfg.Version),
-		done:         make(chan struct{}),
+		// Chosen once and held for the session, so ATCLS redraws the same
+		// piece the caller connected to rather than shuffling under them.
+		banner: bannerFor(art, cfg.Version),
+		done:   make(chan struct{}),
 	}
 }
 
@@ -599,6 +605,7 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 					close(remoteGone)
 					return
 				}
+				s.metrics.BytesTransferred(metrics.DirectionToClient, len(filtered))
 			}
 		}
 	}()
@@ -725,6 +732,7 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 				s.sendResult(modem.ResultNoCarrier)
 				return
 			}
+			s.metrics.BytesTransferred(metrics.DirectionToRemote, len(out))
 		}
 	}
 }

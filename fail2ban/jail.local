@@ -6,6 +6,16 @@ enabled = true
 port = 2323
 filter = telix
 logpath = /app/logs/telix.log
-maxretry = 5
-bantime = 7200
+# 10 strikes inside findtime before a ban. Doubled from 5: the filter counts
+# rate-limit hits and invalid commands, which a curious caller poking at AT
+# commands generates without meaning any harm.
+maxretry = 10
+# 15 minutes, matching findtime: long enough to break a hammering client, short
+# enough that someone who fat-fingers their way into a ban is not locked out for
+# the afternoon.
+#
+# A short ban means an IP cycles back in sooner and can *collect* bans faster,
+# so it makes recidive's week-long ban easier to reach rather than harder —
+# which is why recidive's maxretry is set well up, to 50.
+bantime = 900
 findtime = 900

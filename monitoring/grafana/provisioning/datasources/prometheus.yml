@@ -1,0 +1,21 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # Fixed uid so the committed dashboard JSON can reference it directly. A
+    # provisioned dashboard has no import step, so the usual ${DS_PROMETHEUS}
+    # placeholder would never be substituted and every panel would fail to
+    # resolve its datasource.
+    uid: prometheus
+    access: proxy
+    # Compose service name on telix-net — Grafana resolves it internally, which
+    # is why Prometheus needs no host-published port for the dashboard to work.
+    url: http://prometheus:9090
+    isDefault: true
+    # Lets a redeploy correct the URL rather than failing on "already exists".
+    editable: false
+    jsonData:
+      # Match the scrape_interval in prometheus.yml so Grafana's $__rate_interval
+      # resolves to something sane and rate() panels are not all "No data".
+      timeInterval: 15s

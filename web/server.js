@@ -5,6 +5,9 @@ const { WebSocketServer } = require('ws');
 const path = require('path');
 const fs = require('fs');
 const { computeAssetVersion, stampAssetUrls } = require('./asset-version');
+const { Metrics, CONTENT_TYPE: METRICS_CONTENT_TYPE } = require('./metrics');
+
+const metrics = new Metrics();
 
 const TELIX_HOST = process.env.TELIX_HOST || 'localhost';
 const TELIX_PORT = parseInt(process.env.TELIX_PORT || '2323', 10);
@@ -66,8 +69,84 @@ try {
   INDEX_HTML = null; // fall back to static serving of the raw index.html
 }
 
+// --- Security headers ---
+// Hand-rolled rather than pulled from helmet for the same reason metrics.js is:
+// the image installs with `npm ci`, which aborts when package.json and the lock
+// file disagree, so a new dependency means regenerating the lock. This is a
+// fixed set of static headers — the part helmet earns its keep on (per-request
+// nonces, CSP report parsing) is not in play here.
+//
+// The CSP is written against what the page actually loads:
+//   script-src   xterm and its WebGL addon come from jsdelivr, pinned by SRI in
+//                index.html. No inline script anywhere, so no 'unsafe-inline'
+//                and no nonce plumbing.
+//   style-src    'unsafe-inline' is unavoidable: xterm builds a <style> element
+//                at runtime for its cell metrics and theme, and a library that
+//                does not take a nonce cannot be covered any other way. It is a
+//                far weaker grant than inline script.
+//   img-src      data: for the moulded-plastic noise tile in terminal.css.
+//   connect-src  'self' covers the same-origin WebSocket — ws:// and wss:// of
+//                the page's own origin match 'self' in CSP3. Deliberately not
+//                widened to bare `ws:`, which would allow any host.
+//   font-src     the CP437 bitmap font is served from here, not a font CDN.
+// Everything unnamed falls through to default-src 'self'; the four 'none'
+// directives close off clickjacking, <base> hijacking, plugin content and
+// form-based exfiltration, none of which this app has any use for.
+const CDN_ORIGIN = 'https://cdn.jsdelivr.net';
+const CSP = [
+  "default-src 'self'",
+  `script-src 'self' ${CDN_ORIGIN}`,
+  `style-src 'self' 'unsafe-inline' ${CDN_ORIGIN}`,
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+// A terminal needs none of these. Named explicitly rather than left to the
+// defaults so a future embed cannot inherit them.
+const PERMISSIONS_POLICY = [
+  'accelerometer=()', 'camera=()', 'display-capture=()', 'geolocation=()',
+  'gyroscope=()', 'magnetometer=()', 'microphone=()', 'midi=()',
+  'payment=()', 'usb=()',
+].join(', ');
+
+const HSTS_MAX_AGE = parseInt(process.env.HSTS_MAX_AGE || '15552000', 10); // 180 days
+
+// True when the browser reached us over TLS, directly or through the nginx /
+// Cloudflare front (nginx.conf sets X-Forwarded-Proto $scheme). Same trust
+// model as getClientIP: the header is only meaningful because a reverse proxy
+// in front of this process sets it.
+function isSecureRequest(req) {
+  const forwarded = req.headers['x-forwarded-proto'];
+  if (forwarded) return forwarded.split(',')[0].trim() === 'https';
+  return Boolean(req.socket.encrypted);
+}
+
+function securityHeaders(req, res, next) {
+  res.set('Content-Security-Policy', CSP);
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY'); // frame-ancestors' predecessor, for old browsers
+  res.set('Referrer-Policy', 'no-referrer'); // nothing here links out
+  res.set('Permissions-Policy', PERMISSIONS_POLICY);
+  res.set('Cross-Origin-Opener-Policy', 'same-origin');
+  res.set('Cross-Origin-Resource-Policy', 'same-origin');
+  // Only over TLS. Sent on a plain-HTTP response a browser ignores it anyway,
+  // and promising HSTS for a deployment that has no TLS would lock users out.
+  if (isSecureRequest(req)) {
+    res.set('Strict-Transport-Security', `max-age=${HSTS_MAX_AGE}; includeSubDomains`);
+  }
+  next();
+}
+
 // --- Express + WebSocket server ---
 const app = express();
+
+app.disable('x-powered-by'); // no free version disclosure
+app.use(securityHeaders);
 
 // Serve the versioned HTML for the app entry points, always revalidated so the
 // stamped asset URLs are never themselves cached stale.
@@ -86,6 +165,17 @@ app.get('/config.json', (req, res) => {
   });
 });
 
+// Prometheus scrape endpoint. Shares the app's port rather than taking a second
+// listener: this server already speaks HTTP, and the host-side exposure is
+// restricted by the port bindings in docker-compose.yml.
+app.get('/metrics', (req, res) => {
+  res.set('Content-Type', METRICS_CONTENT_TYPE);
+  res.set('Cache-Control', 'no-store');
+  res.send(metrics.render());
+});
+
+app.get('/healthz', (req, res) => res.type('text').send('ok\n'));
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
@@ -95,11 +185,13 @@ wss.on('connection', (ws, req) => {
 
   if (current >= MAX_WS_PER_IP) {
     console.warn(`WebSocket rejected: ${clientIP} (${current}/${MAX_WS_PER_IP} connections)`);
+    metrics.wsRejected();
     ws.close(1008, 'Too many connections');
     return;
   }
 
   ipConnections.set(clientIP, current + 1);
+  metrics.wsConnected();
   console.log(`WebSocket client connected (${clientIP}, ${current + 1}/${MAX_WS_PER_IP})`);
 
   const tcp = net.createConnection({ host: TELIX_HOST, port: TELIX_PORT });
@@ -113,6 +205,7 @@ wss.on('connection', (ws, req) => {
   tcp.on('data', (data) => {
     if (ws.readyState === ws.OPEN) {
       ws.send(data, { binary: true });
+      metrics.bytesToBrowser(data.length);
     }
   });
 
@@ -130,7 +223,9 @@ wss.on('connection', (ws, req) => {
       ]);
       tcp.write(naws); // NAWS is proxy-constructed and correctly formed; do not re-escape.
     } else {
-      tcp.write(escapeIAC(Buffer.isBuffer(data) ? data : Buffer.from(data)));
+      const out = escapeIAC(Buffer.isBuffer(data) ? data : Buffer.from(data));
+      tcp.write(out);
+      metrics.bytesToGateway(out.length);
     }
   });
 
@@ -140,6 +235,7 @@ wss.on('connection', (ws, req) => {
   function cleanup() {
     if (cleaned) return;
     cleaned = true;
+    metrics.wsDisconnected();
     tcp.destroy();
     if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
       ws.close();
@@ -154,6 +250,7 @@ wss.on('connection', (ws, req) => {
 
   tcp.on('error', (err) => {
     console.error(`TCP error (${clientIP}):`, err.message);
+    metrics.proxyError();
     cleanup();
   });
 

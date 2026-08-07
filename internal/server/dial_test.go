@@ -316,7 +316,7 @@ func TestGatedConnect_PromptFollowsConnectAndGatesTheDial(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			s.gatedConnect("555-1212", entry)
+			s.gatedConnect("555-1212", entry, s.beginDial())
 		}()
 
 		rec.waitFor(t, "PASSWORD:")
@@ -355,7 +355,7 @@ func TestGatedConnect_PromptFollowsConnectAndGatesTheDial(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			s.gatedConnect("555-1212", entry)
+			s.gatedConnect("555-1212", entry, s.beginDial())
 		}()
 
 		rec.waitFor(t, "PASSWORD:")
@@ -378,6 +378,73 @@ func TestGatedConnect_PromptFollowsConnectAndGatesTheDial(t *testing.T) {
 			t.Errorf("unexpected NO CARRIER on the success path: %q", out)
 		}
 	})
+}
+
+// A phonebook entry marked busy is a line that is always engaged. The caller
+// must hear a busy signal without the gateway placing a call — a dial that
+// still reached the host would make the flag useless for taking a BBS out of
+// service — and without ringing first, since the telco returns busy tone
+// instead of ringback.
+func TestHandleDial_BusyEntryAlwaysReportsBusy(t *testing.T) {
+	bbs := fakeBBS(t)
+	cfg := &config.Config{
+		Version: "test",
+		Phonebook: []config.PhonebookEntry{{
+			Number: "555-1212", Name: "engaged", Host: bbs.host, Port: bbs.port, Busy: true,
+		}},
+	}
+	s, m := metricsSession(t, cfg)
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	s.conn = server
+	rec := recordClient(t, client)
+
+	s.handleDial("555-1212")
+	rec.waitFor(t, "BUSY")
+
+	out := rec.text()
+	if strings.Contains(out, "RING") {
+		t.Errorf("a busy line must not ring first, got %q", out)
+	}
+	if strings.Contains(out, "CONNECT") {
+		t.Errorf("a busy line must never report CONNECT, got %q", out)
+	}
+	if s.modem.State() != modem.StateCommand {
+		t.Errorf("modem state = %v after a busy line, want StateCommand", s.modem.State())
+	}
+	// Give a stray dial time to land before declaring none happened.
+	time.Sleep(200 * time.Millisecond)
+	if n := bbs.accepted(); n != 0 {
+		t.Errorf("a busy entry opened %d connection(s) to the BBS, want 0", n)
+	}
+	assertScrapeHas(t, scrape(t, m), `telix_dials_total{entry="engaged",outcome="busy"} 1`)
+}
+
+// A busy line is engaged before any negotiation happens, so the settings check
+// must not get a say: an entry that is both busy and picky reports BUSY, not
+// the garbage-CONNECT of a settings mismatch.
+func TestHandleDial_BusyOutranksRequiredSettings(t *testing.T) {
+	cfg := &config.Config{
+		Version: "test",
+		Phonebook: []config.PhonebookEntry{{
+			Number: "555-1212", Name: "engaged", Busy: true,
+			RequiredSettings: config.RequiredSettings{Init: "ATZ"},
+		}},
+	}
+	s, _ := metricsSession(t, cfg)
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	s.conn = server
+	rec := recordClient(t, client)
+
+	s.handleDial("555-1212")
+	rec.waitFor(t, "BUSY")
+
+	if out := rec.text(); strings.Contains(out, "CONNECT") {
+		t.Errorf("expected BUSY without the settings-mismatch CONNECT, got %q", out)
+	}
 }
 
 func TestIsConnectionRefused(t *testing.T) {

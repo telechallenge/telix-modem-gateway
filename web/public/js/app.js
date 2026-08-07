@@ -199,6 +199,13 @@ document.addEventListener('DOMContentLoaded', () => {
     updateMuteIcon();
   });
 
+  // Sticky note on the bezel: a scratchpad kept in this browser only. Closing
+  // it hands the keyboard straight back to the terminal, so a user who opened
+  // it mid-session can carry on typing at the BBS without reaching for a mouse.
+  if (window.StickyNote) {
+    window.StickyNote.mountStickyNote({ onCollapse: () => term.focus() });
+  }
+
   // WebSocket connection
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);

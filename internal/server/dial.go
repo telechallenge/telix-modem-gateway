@@ -13,14 +13,48 @@ import (
 
 	"telix/internal/config"
 	"telix/internal/dialer"
+	"telix/internal/metrics"
 	"telix/internal/modem"
 )
 
 const dialCooldown = 3 * time.Second
 
+// dialTracker records exactly one telix_dials_total observation per ATDT.
+//
+// handleDial has a dozen exit paths and hands off to gatedConnect for
+// password-gated entries, so tagging each return individually would guarantee
+// that a later edit misses one and silently under-counts. Instead the outcome
+// is a field mutated along the way and flushed by a single deferred finish().
+// The zero outcome is no_carrier because that is what the terminal is told on
+// any path that falls over without classifying itself.
+type dialTracker struct {
+	session *Session
+	entry   string
+	outcome string
+	started time.Time
+}
+
+func (s *Session) beginDial() *dialTracker {
+	s.metrics.DialStarted()
+	return &dialTracker{
+		session: s,
+		entry:   "unknown",
+		outcome: metrics.OutcomeNoCarrier,
+		started: time.Now(),
+	}
+}
+
+func (t *dialTracker) finish() {
+	t.session.metrics.DialCompleted(t.entry, t.outcome, time.Since(t.started))
+}
+
 func (s *Session) handleDial(number string) {
+	t := s.beginDial()
+	defer t.finish()
+
 	// Enforce minimum time between dial attempts
 	if time.Since(s.lastDial) < dialCooldown {
+		t.outcome = metrics.OutcomeBlocked
 		s.sendResult(modem.ResultError)
 		return
 	}
@@ -35,13 +69,28 @@ func (s *Session) handleDial(number string) {
 	// Look up number in phonebook
 	entry := s.config.LookupNumber(number)
 	if entry == nil {
+		t.outcome = metrics.OutcomeUnknownNumber
 		s.logger.InvalidNumber(number)
 		s.sendIntercept()
+		return
+	}
+	// Label by entry name, never the dialled digits — an attacker sweeping
+	// numbers would otherwise mint a new time series per guess.
+	t.entry = entry.Name
+
+	// An entry marked busy is a line that is always engaged. The telco returns
+	// busy tone before anything rings and before any negotiation, so this is
+	// settled ahead of the settings check and no call is ever placed.
+	if entry.Busy {
+		t.outcome = metrics.OutcomeBusy
+		s.logger.ConnectionAttempt(number, "busy")
+		s.sendBusy()
 		return
 	}
 
 	// Check required settings
 	if !s.checkRequiredSettings(number, entry) {
+		t.outcome = metrics.OutcomeSettingsMismatch
 		s.sendRings()
 		s.sendGarbageConnect()
 		return
@@ -53,7 +102,7 @@ func (s *Session) handleDial(number string) {
 	if entry.Password != "" {
 		s.sendRings()
 		s.modemHandshakePause()
-		s.gatedConnect(number, entry)
+		s.gatedConnect(number, entry, t)
 		return
 	}
 
@@ -92,8 +141,10 @@ func (s *Session) handleDial(number string) {
 			if res.err != nil {
 				s.logger.ConnectionAttempt(number, "failed")
 				if isConnectionRefused(res.err) {
+					t.outcome = metrics.OutcomeBusy
 					s.sendResult(modem.ResultBusy)
 				} else {
+					t.outcome = metrics.OutcomeNoCarrier
 					s.sendResult(modem.ResultNoCarrier)
 				}
 				return
@@ -103,6 +154,7 @@ func (s *Session) handleDial(number string) {
 			s.remoteMu.Unlock()
 			s.modemHandshakePause()
 			s.modem.SetState(modem.StateData)
+			t.outcome = metrics.OutcomeSuccess
 			s.logger.ConnectionAttempt(number, "success")
 			s.sendConnect(entry.RequiredSettings.Baud)
 			return
@@ -116,6 +168,7 @@ func (s *Session) handleDial(number string) {
 	select {
 	case res = <-ch:
 	case <-time.After(timeout + 5*time.Second):
+		t.outcome = metrics.OutcomeTimeout
 		s.logger.ConnectionAttempt(number, "failed")
 		s.sendResult(modem.ResultNoCarrier)
 		return
@@ -123,8 +176,10 @@ func (s *Session) handleDial(number string) {
 	if res.err != nil {
 		s.logger.ConnectionAttempt(number, "failed")
 		if isConnectionRefused(res.err) {
+			t.outcome = metrics.OutcomeBusy
 			s.sendResult(modem.ResultBusy)
 		} else {
+			t.outcome = metrics.OutcomeNoCarrier
 			s.sendResult(modem.ResultNoCarrier)
 		}
 		return
@@ -136,6 +191,7 @@ func (s *Session) handleDial(number string) {
 
 	s.modemHandshakePause()
 	s.modem.SetState(modem.StateData)
+	t.outcome = metrics.OutcomeSuccess
 	s.logger.ConnectionAttempt(number, "success")
 	s.sendConnect(entry.RequiredSettings.Baud)
 }
@@ -144,7 +200,7 @@ func (s *Session) handleDial(number string) {
 // It reports CONNECT so the terminal believes the far end picked up, presents
 // the PASSWORD: prompt as the BBS itself would, and only then places the
 // outbound call — a rejected password never touches the remote host.
-func (s *Session) gatedConnect(number string, entry *config.PhonebookEntry) {
+func (s *Session) gatedConnect(number string, entry *config.PhonebookEntry, t *dialTracker) {
 	s.sendConnect(entry.RequiredSettings.Baud)
 
 	// Let the "BBS" take a beat before its login prompt, the way a real one
@@ -152,6 +208,10 @@ func (s *Session) gatedConnect(number string, entry *config.PhonebookEntry) {
 	time.Sleep(time.Duration(400+rand.Intn(800)) * time.Millisecond)
 
 	if !s.promptPassword(number, entry.Password) {
+		// promptPassword reports NO CARRIER for both a wrong password and a
+		// dropped read; auth_failed is the useful reading on the dashboard,
+		// since it is the one an operator would want to alert on.
+		t.outcome = metrics.OutcomeAuthFailed
 		return
 	}
 
@@ -161,6 +221,7 @@ func (s *Session) gatedConnect(number string, entry *config.PhonebookEntry) {
 
 	conn, err := d.Dial(entry.Host, entry.Port)
 	if err != nil {
+		t.outcome = metrics.OutcomeNoCarrier
 		s.logger.ConnectionAttempt(number, "failed")
 		// The terminal already saw CONNECT, so a dropped carrier is the only
 		// report left that doesn't contradict it — BUSY would.
@@ -173,6 +234,7 @@ func (s *Session) gatedConnect(number string, entry *config.PhonebookEntry) {
 	s.remoteMu.Unlock()
 
 	s.modem.SetState(modem.StateData)
+	t.outcome = metrics.OutcomeSuccess
 	s.logger.ConnectionAttempt(number, "success")
 	// No second CONNECT: as far as the terminal is concerned the call has
 	// been up since before the password prompt.
@@ -310,6 +372,14 @@ func (s *Session) sendNoAnswer() {
 		time.Sleep(time.Duration(2500+rand.Intn(1000)) * time.Millisecond)
 	}
 	s.sendResult(modem.ResultNoAnswer)
+}
+
+// sendBusy simulates dialling a line that is already engaged: the modem dials
+// out, hears busy tone instead of ringback, and reports BUSY. No RING is sent,
+// since the far end never rings.
+func (s *Session) sendBusy() {
+	time.Sleep(time.Duration(1500+rand.Intn(1000)) * time.Millisecond)
+	s.sendResult(modem.ResultBusy)
 }
 
 // sendIntercept simulates a telco intercept announcement for an invalid number.

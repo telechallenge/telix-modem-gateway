@@ -15,6 +15,9 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./configs/telix.yaml:/etc/telix/telix.yaml:ro
+      # ANSI art for the connect banner, re-read per call — drop a .ANS in here
+      # and the next caller can get it, no restart needed.
+      - ./banners:/etc/telix/banners:ro
       - telix-logs:/app/logs
     networks:
       - telix-net
@@ -48,6 +51,138 @@ services:
     depends_on:
       telix:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Surfaces fail2ban's ban state to Prometheus. Reads the database read-only
+  # from the shared volume and never touches the fail2ban socket, so it needs no
+  # privileges and cannot affect banning. Publishes no host port — Prometheus
+  # scrapes it over telix-net by service name.
+  fail2ban-exporter:
+    build:
+      context: ./monitoring/fail2ban-exporter
+      dockerfile: Dockerfile
+    container_name: telix-fail2ban-exporter
+    restart: unless-stopped
+    expose:
+      - "9102"
+    # Root only because fail2ban's database is root-owned at 0600; everything
+    # else is taken away in exchange.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    volumes:
+      - fail2ban-data:/data:ro
+    networks:
+      - telix-net
+    depends_on:
+      - fail2ban
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Surfaces the ENiGMA1/2 boards in ~/bbs/bbs_infra to Prometheus. Reads their
+  # SQLite databases read-only off a bind mount and never touches the BBS
+  # processes, so it cannot disturb a live caller. Instances are discovered from
+  # the directory rather than configured here -- a fourth board needs no change.
+  #
+  # The boards live on their own isolated Docker networks (bbs1net/bbs2net/...)
+  # and expose no metrics endpoint of their own, so scraping them directly is not
+  # an option; the shared data directory is the only seam.
+  bbs-exporter:
+    build:
+      context: ./monitoring/bbs-exporter
+      dockerfile: Dockerfile
+    container_name: telix-bbs-exporter
+    restart: unless-stopped
+    expose:
+      - "9104"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    volumes:
+      # Read-only, and SQLite is opened with mode=ro on top of that. Verified
+      # that a WAL database still reads *fresh* through a :ro mount.
+      #
+      # ${HOME}, not "~": Compose does not expand a tilde in a volume source, it
+      # creates a directory literally named "~" and mounts that instead -- so the
+      # exporter would come up healthy and report zero instances forever.
+      - ${BBS_INSTANCES_DIR:-${HOME}/bbs/bbs_infra/instances}:/instances:ro
+    networks:
+      - telix-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # The only container in this stack that holds the Docker socket, and it is a
+  # filter rather than a consumer: haproxy with an allowlist. CONTAINERS=1 opens
+  # GET on /containers/*, and every other endpoint plus every write verb stays
+  # denied by default -- so a compromise of docker-exporter buys the ability to
+  # list containers, not to create a privileged one.
+  #
+  # It sits on its own internal network with docker-exporter. `internal: true`
+  # means that network has no route off the host at all.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: telix-docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      # Everything not listed here is denied; the image defaults all endpoints
+      # to 0 and refuses non-GET verbs unless POST=1.
+      - CONTAINERS=1
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-api
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Per-container CPU/memory/network for every container on this host, which is
+  # how the non-ENiGMA boards (boringland_filedrop, warez-server) get a dashboard
+  # at all -- they have no metrics endpoint and no SQLite schema in common.
+  #
+  # This replaces cAdvisor, which cannot work on this host: Docker 29 uses the
+  # containerd image store, so /var/lib/docker/image has no <driver>/layerdb
+  # tree, and cAdvisor's cgroup-to-container mapping fails for every container.
+  # It comes up healthy and reports exactly one series (the root cgroup). See
+  # the module docstring in monitoring/docker-exporter/exporter.py.
+  docker-exporter:
+    build:
+      context: ./monitoring/docker-exporter
+      dockerfile: Dockerfile
+    container_name: telix-docker-exporter
+    restart: unless-stopped
+    expose:
+      - "9105"
+    environment:
+      - DOCKER_PROXY=docker-socket-proxy:2375
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    networks:
+      # telix-net to be scraped, docker-api to reach the proxy. It has no
+      # access to the socket itself on either.
+      - telix-net
+      - docker-api
+    depends_on:
+      - docker-socket-proxy
     logging:
       driver: "json-file"
       options:
@@ -97,11 +232,115 @@ services:
         max-size: "50m"
         max-file: "3"
 
+  # --- Monitoring ---
+  #
+  # Prometheus scrapes the gateway, the web proxy and node_exporter over
+  # telix-net, so none of those need to publish a port to the host. Only
+  # Prometheus and Grafana are reachable from outside, and only on loopback and
+  # the Tailscale address (see MONITORING_BIND_* in .env) — this stack is
+  # internet-facing and neither service should be.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: telix-prometheus
+    restart: unless-stopped
+    user: "nobody"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    # Lets Prometheus reach the VirtualBox exporter, which runs on the host as a
+    # systemd --user unit because VBoxManage needs the session owner's IPC
+    # socket. See monitoring/vbox-exporter/telix-vbox-exporter.service.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${MONITORING_BIND_LOCAL:-127.0.0.1}:9090:9090"
+      - "${MONITORING_BIND_TAILSCALE:-127.0.0.1}:9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - telix-net
+    depends_on:
+      - telix
+      - telix-web
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Host-level vitals (CPU, memory, disk, network). Reads the host's /proc and
+  # /sys through read-only bind mounts rather than joining the host network
+  # namespace, so it stays scrapeable as node-exporter:9100 on telix-net and
+  # publishes nothing to the host itself.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: telix-node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/host/root'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    networks:
+      - telix-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: telix-grafana
+    restart: unless-stopped
+    ports:
+      # 3001 on the host: telix-web already owns 3000 in this stack.
+      - "${MONITORING_BIND_LOCAL:-127.0.0.1}:3001:3000"
+      - "${MONITORING_BIND_TAILSCALE:-127.0.0.1}:3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Nothing here is reachable without going through Tailscale or the host,
+      # so leave sign-up off and anonymous access off regardless.
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - telix-net
+    depends_on:
+      - prometheus
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
 volumes:
   telix-logs:
   fail2ban-data:
   nginx-certs:
+  prometheus-data:
+  grafana-data:
 
 networks:
   telix-net:
     driver: bridge
+  # Carries exactly one conversation: docker-exporter -> docker-socket-proxy.
+  # internal: true gives it no route off the host, so the proxy is unreachable
+  # from anywhere but the one container that needs it.
+  docker-api:
+    driver: bridge
+    internal: true

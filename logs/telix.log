@@ -14,3 +14,46 @@
 {"event":"server_started","level":"info","port":2323,"timestamp":"2026-05-14T02:44:22Z"}
 {"event":"shutdown_signal","level":"info","signal":"interrupt","timestamp":"2026-05-14T02:45:25Z"}
 {"event":"server_stopped","level":"info","timestamp":"2026-05-14T02:45:25Z"}
+{"event":"startup","level":"info","phonebook_entries":7,"timestamp":"2026-08-06T03:26:15Z","version":"1.0.0"}
+{"error":"listen tcp :2323: bind: address already in use","event":"startup_failed","level":"error","timestamp":"2026-08-06T03:26:15Z"}
+{"event":"startup","level":"info","phonebook_entries":7,"timestamp":"2026-08-06T15:42:38Z","version":"v0.1.0-61-g815dce4-dirty"}
+{"error":"listen tcp :2323: bind: address already in use","event":"startup_failed","level":"error","timestamp":"2026-08-06T15:42:38Z"}
+{"event":"startup","level":"info","phonebook_entries":7,"timestamp":"2026-08-06T15:44:09Z","version":"v0.1.0-61-g815dce4-dirty"}
+{"event":"server_started","level":"info","port":2323,"timestamp":"2026-08-06T15:44:09Z"}
+{"event":"new_connection","level":"info","session_id":"b74ccaf2","source_ip":"::1","timestamp":"2026-08-06T15:44:26Z"}
+{"event":"disconnected","level":"info","session_id":"b74ccaf2","source_ip":"::1","timestamp":"2026-08-06T15:44:33Z"}
+{"event":"shutdown_signal","level":"info","signal":"terminated","timestamp":"2026-08-06T15:45:17Z"}
+{"event":"server_stopped","level":"info","timestamp":"2026-08-06T15:45:17Z"}
+{"event":"startup","level":"info","phonebook_entries":7,"timestamp":"2026-08-06T16:08:46Z","version":"v0.1.0-61-g815dce4-dirty"}
+{"addr":"0.0.0.0:9101","event":"metrics_server_started","level":"info","timestamp":"2026-08-06T16:08:46Z"}
+{"error":"listen tcp :2323: bind: address already in use","event":"startup_failed","level":"error","timestamp":"2026-08-06T16:08:46Z"}
+{"event":"startup","level":"info","phonebook_entries":7,"timestamp":"2026-08-06T16:09:19Z","version":"v0.1.0-61-g815dce4-dirty"}
+{"addr":"0.0.0.0:9101","event":"metrics_server_started","level":"info","timestamp":"2026-08-06T16:09:19Z"}
+{"event":"server_started","level":"info","port":2324,"timestamp":"2026-08-06T16:09:19Z"}
+{"event":"new_connection","level":"info","session_id":"d9bd0057","source_ip":"::1","timestamp":"2026-08-06T16:09:26Z"}
+{"dialed_number":"5550000","event":"invalid_number","level":"warn","session_id":"d9bd0057","source_ip":"::1","timestamp":"2026-08-06T16:09:29Z"}
+{"event":"disconnected","level":"info","session_id":"d9bd0057","source_ip":"::1","timestamp":"2026-08-06T16:09:34Z"}
+{"event":"shutdown_signal","level":"info","signal":"terminated","timestamp":"2026-08-06T16:09:50Z"}
+{"event":"server_stopped","level":"info","timestamp":"2026-08-06T16:09:50Z"}
+{"event":"startup","level":"info","phonebook_entries":8,"timestamp":"2026-08-06T16:09:58Z","version":"v0.1.0-61-g815dce4-dirty"}
+{"addr":"0.0.0.0:9101","event":"metrics_server_started","level":"info","timestamp":"2026-08-06T16:09:58Z"}
+{"event":"server_started","level":"info","port":2324,"timestamp":"2026-08-06T16:09:58Z"}
+{"event":"new_connection","level":"info","session_id":"cb0ecb89","source_ip":"::1","timestamp":"2026-08-06T16:09:58Z"}
+{"event":"shutdown_signal","level":"info","signal":"terminated","timestamp":"2026-08-06T16:10:57Z"}
+{"event":"server_stopped","level":"info","timestamp":"2026-08-06T16:10:57Z"}
+{"event":"startup","level":"info","phonebook_entries":8,"timestamp":"2026-08-06T16:10:58Z","version":"v0.1.0-61-g815dce4-dirty"}
+{"addr":"0.0.0.0:9101","event":"metrics_server_started","level":"info","timestamp":"2026-08-06T16:10:58Z"}
+{"event":"server_started","level":"info","port":2324,"timestamp":"2026-08-06T16:10:58Z"}
+{"event":"new_connection","level":"info","session_id":"55838943","source_ip":"127.0.0.1","timestamp":"2026-08-06T16:10:58Z"}
+{"dialed_number":"555-9999","event":"connection_attempt","level":"info","result":"attempting","session_id":"55838943","source_ip":"127.0.0.1","timestamp":"2026-08-06T16:11:01Z"}
+{"dialed_number":"555-9999","event":"connection_attempt","level":"info","result":"success","session_id":"55838943","source_ip":"127.0.0.1","timestamp":"2026-08-06T16:11:07Z"}
+{"event":"disconnected","level":"info","session_id":"55838943","source_ip":"127.0.0.1","timestamp":"2026-08-06T16:11:16Z"}
+{"event":"shutdown_signal","level":"info","signal":"terminated","timestamp":"2026-08-06T16:11:32Z"}
+{"event":"server_stopped","level":"info","timestamp":"2026-08-06T16:11:32Z"}
+{"event":"startup","level":"info","phonebook_entries":8,"timestamp":"2026-08-06T16:15:07Z","version":"v0.1.0-61-g815dce4-dirty"}
+{"addr":"0.0.0.0:9101","event":"metrics_server_started","level":"info","timestamp":"2026-08-06T16:15:07Z"}
+{"event":"server_started","level":"info","port":2324,"timestamp":"2026-08-06T16:15:07Z"}
+{"event":"new_connection","level":"info","session_id":"57ac8bc5","source_ip":"::1","timestamp":"2026-08-06T16:15:17Z"}
+{"event":"disconnected","level":"info","session_id":"57ac8bc5","source_ip":"::1","timestamp":"2026-08-06T16:15:25Z"}
+{"event":"shutdown_signal","level":"info","signal":"terminated","timestamp":"2026-08-06T23:18:51Z"}
+{"event":"server_stopped","level":"info","timestamp":"2026-08-06T23:18:51Z"}

@@ -12,14 +12,72 @@
   box-sizing: border-box;
 }
 
+/*
+ * Period palette: the putty-beige ABS every PC, monitor and external modem was
+ * moulded from between roughly 1988 and 1998, lit from above and yellowed a
+ * shade with age. Lettering on that plastic was either silkscreened or moulded
+ * in, so it reads as dark ink with a light lower edge, never as pure black.
+ */
+:root {
+  --u: 1px; /* redefined per-scale on .crt-container; fallback for fixed UI */
+
+  --beige-lit:   #e7dcba;
+  --beige:       #d6c8a2;
+  --beige-shade: #bdae87;
+  --beige-deep:  #9e9068;
+
+  --ink:      #45402f;
+  --ink-soft: #544e3e;
+
+  /* Canary Post-it and the ballpoint it gets written on. */
+  --note-lit:   #f8e88f;
+  --note:       #f0da72;
+  --note-shade: #ddc357;
+  --note-ink:   #2b3550;
+
+  --glass:   #0d100d; /* the CRT face with the set off — never pure black */
+  --lcd:     #93a67d; /* green STN panel, backlit */
+  --lcd-ink: #1a2115;
+
+  /*
+   * Fine pebble texture moulded into the case. One 120px tile of greyscale
+   * fractal noise, rasterized once and repeated — without it the large beige
+   * panels read as flat vector fills rather than plastic.
+   */
+  --plastic-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.16'/%3E%3C/svg%3E");
+}
+
 html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #0c0c0f;
   display: flex;
   justify-content: center;
   align-items: center;
+}
+
+/*
+ * The desk the monitor sits on: a top-down photograph of a period workbench —
+ * chip tubes, a spiral notebook, ribbon cable, crushed cans, 3.5" disks. Its
+ * own vignette already supplies the dim room with one warm light above, which
+ * is the lighting the beige plastic is drawn to read against, so the gradient
+ * that used to stand in for it is now only a scrim: it deepens the edges so the
+ * clutter never competes with the screen, and stays near-clear over the empty
+ * middle where the monitor lands. The flat colour underneath matches the
+ * photo's darkest tone, so a failed image request degrades to the old look
+ * rather than to a white page.
+ */
+body {
+  background-color: #0b0908;
+  background-image:
+    radial-gradient(ellipse 78% 62% at 50% 40%,
+      rgba(20, 17, 13, 0) 0%,
+      rgba(13, 11, 9, 0.45) 58%,
+      rgba(7, 6, 5, 0.82) 100%),
+    url('../img/hacker-desk.webp');
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: cover, cover;
 }
 
 /* --- CRT Monitor --- */
@@ -40,26 +98,53 @@ html, body {
 }
 
 .crt-monitor {
-  background: linear-gradient(170deg, #303035 0%, #222225 50%, #1a1a1d 100%);
-  border-radius: calc(18 * var(--u));
-  padding: calc(28 * var(--u)) calc(32 * var(--u)) 0;
+  position: relative; /* anchors the sticky note to the bezel */
+  background-image:
+    var(--plastic-grain),
+    linear-gradient(168deg, var(--beige-lit) 0%, var(--beige) 44%, var(--beige-shade) 100%);
+  border-radius: calc(16 * var(--u)) calc(16 * var(--u)) calc(7 * var(--u)) calc(7 * var(--u));
+  padding: calc(11 * var(--u)) calc(30 * var(--u)) 0;
   box-shadow:
-    0 25px 80px rgba(0, 0, 0, 0.7),
-    0 5px 20px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+    0 calc(25 * var(--u)) calc(70 * var(--u)) rgba(0, 0, 0, 0.65),
+    0 calc(6 * var(--u)) calc(18 * var(--u)) rgba(0, 0, 0, 0.45),
+    inset 0 calc(1.5 * var(--u)) 0 rgba(255, 255, 255, 0.6),
+    inset 0 calc(-2 * var(--u)) calc(3 * var(--u)) rgba(0, 0, 0, 0.18);
+}
+
+/* Vent slots across the top of the bezel. */
+.crt-vents {
+  height: calc(8 * var(--u));
+  margin: 0 calc(8 * var(--u)) calc(10 * var(--u));
+  border-radius: calc(2 * var(--u));
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 calc(3 * var(--u)),
+    rgba(0, 0, 0, 0.20) calc(3 * var(--u)) calc(5 * var(--u))
+  );
+  box-shadow: inset 0 calc(1 * var(--u)) calc(2 * var(--u)) rgba(0, 0, 0, 0.22);
 }
 
 /* --- Screen --- */
 
+/*
+ * The tube sits in a recess: a ring of darker plastic around it, a hard black
+ * mask just inside the glass, and a little phosphor light spilling back out
+ * onto the bezel. `isolation` gives the filter layers below a stacking context
+ * of their own so `mix-blend-mode` cannot reach the page behind the monitor.
+ */
 .crt-screen {
   position: relative;
-  background: #0a0a0a;
-  border-radius: calc(10 * var(--u));
-  padding: calc(12 * var(--u));
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--glass);
+  border-radius: calc(16 * var(--u));
+  padding: calc(14 * var(--u));
   box-shadow:
-    inset 0 0 20px rgba(0, 0, 0, 0.8),
-    inset 0 0 4px rgba(0, 0, 0, 0.9);
+    inset 0 0 0 calc(2 * var(--u)) #050705,
+    inset 0 0 calc(30 * var(--u)) rgba(0, 0, 0, 0.95),
+    0 0 0 calc(3 * var(--u)) var(--beige-deep),
+    0 calc(2 * var(--u)) calc(5 * var(--u)) calc(3 * var(--u)) rgba(0, 0, 0, 0.32),
+    0 0 calc(28 * var(--u)) calc(6 * var(--u)) rgba(255, 236, 190, 0.10);
 }
 
 #terminal {
@@ -67,68 +152,95 @@ html, body {
   z-index: 1;
 }
 
+/*
+ * Phosphor bloom. `backdrop-filter` samples the terminal painted underneath,
+ * so this is a genuinely blurred, brightened copy of the live screen mixed back
+ * over the crisp one — bright glyphs bleed into their surroundings the way a
+ * real tube's do. Brightening black leaves black, so the background stays put
+ * and the glyphs themselves are never blurred.
+ */
+.crt-bloom {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(calc(1.6 * var(--u))) brightness(1.7) saturate(1.2);
+  backdrop-filter: blur(calc(1.6 * var(--u))) brightness(1.7) saturate(1.2);
+  opacity: 0.38;
+}
+
+/*
+ * Shadow mask. Multiply keeps black black while splitting lit pixels into RGB
+ * triads — plain alpha stripes would lift the whole background instead.
+ */
+.crt-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  background: repeating-linear-gradient(
+    90deg,
+    #ffe2e2 0 var(--u),
+    #e2ffe2 var(--u) calc(2 * var(--u)),
+    #e2e2ff calc(2 * var(--u)) calc(3 * var(--u))
+  );
+}
+
 /* Scanlines */
 .crt-scanlines {
   position: absolute;
   inset: 0;
-  border-radius: inherit;
   background: repeating-linear-gradient(
     0deg,
     transparent 0,
     transparent var(--u),
-    rgba(0, 0, 0, 0.04) var(--u),
-    rgba(0, 0, 0, 0.04) calc(2 * var(--u))
+    rgba(0, 0, 0, 0.13) var(--u),
+    rgba(0, 0, 0, 0.13) calc(2 * var(--u))
   );
   pointer-events: none;
   z-index: 10;
 }
 
-/* Screen curvature vignette */
+/* Tube curvature — the corners of a spherical face fall away from the light. */
 .crt-screen::before {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: inherit;
   background: radial-gradient(
-    ellipse at center,
-    transparent 65%,
-    rgba(0, 0, 0, 0.25) 100%
-  );
-  pointer-events: none;
-  z-index: 11;
-}
-
-/* Glass reflection */
-.crt-glass {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.03) 0%,
-    transparent 40%,
-    transparent 60%,
-    rgba(255, 255, 255, 0.01) 100%
+    ellipse 128% 128% at 50% 50%,
+    transparent 52%,
+    rgba(0, 0, 0, 0.32) 82%,
+    rgba(0, 0, 0, 0.68) 100%
   );
   pointer-events: none;
   z-index: 12;
 }
 
-/* --- Chin / branding --- */
+/* Room light caught in the curved glass. */
+.crt-glass {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 62% 40% at 22% 12%, rgba(255, 255, 255, 0.06), transparent 70%),
+    linear-gradient(
+      128deg,
+      rgba(255, 255, 255, 0.035) 0%,
+      transparent 32%,
+      transparent 68%,
+      rgba(255, 255, 255, 0.018) 100%
+    );
+  pointer-events: none;
+  z-index: 13;
+}
+
+/* --- Chin / branding / front-panel controls --- */
 
 .crt-chin {
   display: flex;
   align-items: center;
   gap: calc(10 * var(--u));
-  padding: calc(12 * var(--u)) calc(8 * var(--u)) calc(14 * var(--u));
-}
-
-.crt-led {
-  width: calc(6 * var(--u));
-  height: calc(6 * var(--u));
-  border-radius: 50%;
-  background: #0f0;
-  box-shadow: 0 0 4px #0f0, 0 0 8px rgba(0, 255, 0, 0.3);
+  padding: calc(14 * var(--u)) calc(4 * var(--u)) calc(16 * var(--u));
 }
 
 .crt-brand {
@@ -141,62 +253,140 @@ html, body {
   font-family: 'PxPlus IBM VGA 8x16', monospace;
   font-size: calc(13 * var(--u));
   font-weight: bold;
-  color: #6a6a6a;
+  color: var(--ink);
   letter-spacing: calc(3 * var(--u));
   text-transform: uppercase;
+  text-shadow: 0 calc(1 * var(--u)) 0 rgba(255, 255, 255, 0.5);
 }
 
 .crt-brand-maker {
   font-family: 'PxPlus IBM VGA 8x16', monospace;
   font-size: calc(9 * var(--u));
-  color: #4a4a4a;
+  color: var(--ink-soft);
   letter-spacing: var(--u);
+  text-shadow: 0 calc(1 * var(--u)) 0 rgba(255, 255, 255, 0.45);
+}
+
+.crt-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: calc(9 * var(--u));
+}
+
+/* Brightness / contrast thumbwheels. */
+.crt-knob {
+  width: calc(18 * var(--u));
+  height: calc(8 * var(--u));
+  border-radius: calc(2 * var(--u));
+  background: repeating-linear-gradient(
+    90deg,
+    var(--beige-deep) 0 var(--u),
+    var(--beige-lit) var(--u) calc(2 * var(--u))
+  );
+  box-shadow:
+    inset 0 0 0 var(--u) rgba(0, 0, 0, 0.18),
+    0 var(--u) 0 rgba(255, 255, 255, 0.45);
+}
+
+.crt-button {
+  width: calc(12 * var(--u));
+  height: calc(8 * var(--u));
+  border-radius: calc(1.5 * var(--u));
+  background: linear-gradient(180deg, var(--beige-lit), var(--beige-shade));
+  box-shadow:
+    inset 0 var(--u) 0 rgba(255, 255, 255, 0.6),
+    0 var(--u) 0 rgba(0, 0, 0, 0.20);
+}
+
+.crt-power {
+  display: flex;
+  align-items: center;
+  gap: calc(7 * var(--u));
+  margin-left: calc(5 * var(--u));
+}
+
+.crt-power-button {
+  width: calc(17 * var(--u));
+  height: calc(11 * var(--u));
+  border-radius: calc(2 * var(--u));
+  background: linear-gradient(180deg, var(--beige-lit), var(--beige-shade));
+  box-shadow:
+    inset 0 0 0 var(--u) var(--beige-deep),
+    inset 0 var(--u) 0 rgba(255, 255, 255, 0.5),
+    0 var(--u) calc(2 * var(--u)) rgba(0, 0, 0, 0.28);
+}
+
+.crt-led {
+  width: calc(7 * var(--u));
+  height: calc(7 * var(--u));
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%, #c6ffbc, #35c748 55%, #0f7a22 100%);
+  box-shadow:
+    0 0 calc(4 * var(--u)) rgba(60, 220, 90, 0.75),
+    0 0 calc(11 * var(--u)) rgba(60, 220, 90, 0.32),
+    inset 0 0 0 var(--u) rgba(0, 0, 0, 0.22);
 }
 
 /* --- Stand --- */
 
 .crt-stand-neck {
-  width: calc(60 * var(--u));
-  height: calc(25 * var(--u));
-  background: linear-gradient(180deg, #1a1a1d, #252528);
-  clip-path: polygon(10% 0%, 90% 0%, 100% 100%, 0% 100%);
+  width: calc(92 * var(--u));
+  height: calc(18 * var(--u));
+  background: linear-gradient(180deg, var(--beige-shade), var(--beige-deep));
+  clip-path: polygon(13% 0%, 87% 0%, 100% 100%, 0% 100%);
 }
 
 .crt-stand-base {
-  width: calc(180 * var(--u));
-  height: calc(10 * var(--u));
-  background: linear-gradient(180deg, #2a2a2d, #1e1e21);
-  border-radius: 0 0 calc(4 * var(--u)) calc(4 * var(--u));
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  width: calc(210 * var(--u));
+  height: calc(14 * var(--u));
+  background-image:
+    var(--plastic-grain),
+    linear-gradient(180deg, var(--beige) 0%, var(--beige-shade) 55%, var(--beige-deep) 100%);
+  border-radius: calc(3 * var(--u)) calc(3 * var(--u)) calc(7 * var(--u)) calc(7 * var(--u));
+  box-shadow:
+    0 calc(6 * var(--u)) calc(16 * var(--u)) rgba(0, 0, 0, 0.55),
+    inset 0 var(--u) 0 rgba(255, 255, 255, 0.4);
 }
 
-/* --- USR Courier Modem --- */
+/* --- External modem --- */
 
 .modem {
   align-self: stretch;
-  margin-top: calc(20 * var(--u));
+  margin-top: calc(24 * var(--u));
 }
 
 .modem-top {
-  height: calc(10 * var(--u));
-  background: linear-gradient(180deg, #38383b, #2d2d30);
-  border-radius: calc(3 * var(--u)) calc(3 * var(--u)) 0 0;
+  height: calc(12 * var(--u));
+  background-image:
+    var(--plastic-grain),
+    linear-gradient(180deg, var(--beige-lit), var(--beige));
+  border-radius: calc(4 * var(--u)) calc(4 * var(--u)) 0 0;
+  box-shadow: inset 0 calc(1.5 * var(--u)) 0 rgba(255, 255, 255, 0.6);
 }
 
 .modem-front {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: calc(7 * var(--u)) calc(20 * var(--u)) calc(9 * var(--u));
-  background: linear-gradient(180deg, #2a2a2d, #1e1e21);
-  border-radius: 0 0 calc(3 * var(--u)) calc(3 * var(--u));
+  padding: calc(8 * var(--u)) calc(20 * var(--u)) calc(10 * var(--u));
+  background-image:
+    var(--plastic-grain),
+    linear-gradient(180deg, var(--beige) 0%, var(--beige-shade) 72%, var(--beige-deep) 100%);
+  border-radius: 0 0 calc(4 * var(--u)) calc(4 * var(--u));
   box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    0 calc(6 * var(--u)) calc(18 * var(--u)) rgba(0, 0, 0, 0.55),
+    inset 0 var(--u) 0 rgba(0, 0, 0, 0.12);
 }
 
+/*
+ * Never squeezed: the LCD's `min-width` would otherwise shrink this row and
+ * clip the last silkscreened label. Letting the panel grow instead just costs
+ * a step of `--crt-scale`, which the fit loop in app.js absorbs.
+ */
 .modem-leds {
   display: flex;
+  flex: 0 0 auto;
   gap: calc(14 * var(--u));
 }
 
@@ -211,44 +401,67 @@ html, body {
   font-family: Arial, Helvetica, sans-serif;
   font-size: calc(8 * var(--u));
   font-weight: bold;
-  color: #555;
+  color: var(--ink);
   letter-spacing: calc(0.5 * var(--u));
+  text-shadow: 0 calc(1 * var(--u)) 0 rgba(255, 255, 255, 0.45);
   user-select: none;
 }
 
+/* Dark red lens, unlit — the beige-case convention (Hayes, USR Sportster). */
 .modem-led-light {
-  width: calc(5 * var(--u));
-  height: calc(5 * var(--u));
+  width: calc(6 * var(--u));
+  height: calc(6 * var(--u));
   border-radius: 50%;
-  background: #162016;
+  background: radial-gradient(circle at 38% 30%, #8c4a3e, #5d2a24 60%, #381713 100%);
+  box-shadow:
+    inset 0 0 0 var(--u) rgba(0, 0, 0, 0.30),
+    0 var(--u) 0 rgba(255, 255, 255, 0.35);
   transition: background 0.05s, box-shadow 0.05s;
 }
 
 /* Steady on */
 .modem-led.on .modem-led-light {
-  background: #0c0;
-  box-shadow: 0 0 3px #0c0, 0 0 6px rgba(0, 204, 0, 0.4);
+  background: radial-gradient(circle at 38% 30%, #ffcfa4, #ff3d12 55%, #ac1a05 100%);
+  box-shadow:
+    0 0 calc(4 * var(--u)) rgba(255, 70, 20, 0.8),
+    0 0 calc(9 * var(--u)) rgba(255, 70, 20, 0.38),
+    inset 0 0 0 var(--u) rgba(0, 0, 0, 0.2);
 }
 
 /* Data activity flash */
 .modem-led.active .modem-led-light {
-  background: #0f0;
-  box-shadow: 0 0 4px #0f0, 0 0 8px rgba(0, 255, 0, 0.5);
+  background: radial-gradient(circle at 38% 30%, #fff0d8, #ff6a2a 50%, #d9300a 100%);
+  box-shadow:
+    0 0 calc(5 * var(--u)) rgba(255, 110, 40, 0.95),
+    0 0 calc(12 * var(--u)) rgba(255, 110, 40, 0.5),
+    inset 0 0 0 var(--u) rgba(0, 0, 0, 0.18);
 }
 
 .modem-mute {
-  background: none;
+  background: linear-gradient(180deg, var(--beige-lit), var(--beige-shade));
   border: none;
+  border-radius: calc(2 * var(--u));
   cursor: pointer;
-  padding: calc(2 * var(--u)) calc(6 * var(--u));
+  padding: calc(3 * var(--u)) calc(7 * var(--u));
   margin-left: auto;
   margin-right: calc(8 * var(--u));
-  opacity: 0.5;
-  transition: opacity 0.15s;
+  box-shadow:
+    inset 0 var(--u) 0 rgba(255, 255, 255, 0.6),
+    0 var(--u) calc(2 * var(--u)) rgba(0, 0, 0, 0.28);
+  transition: background 0.15s;
 }
 
 .modem-mute:hover {
-  opacity: 0.9;
+  background: linear-gradient(180deg, #f3ecda, var(--beige));
+}
+
+.modem-mute:active {
+  box-shadow: inset 0 var(--u) calc(2 * var(--u)) rgba(0, 0, 0, 0.35);
+}
+
+.modem-mute:focus-visible {
+  outline: calc(2 * var(--u)) solid var(--ink);
+  outline-offset: calc(2 * var(--u));
 }
 
 .modem-mute-icon {
@@ -267,16 +480,18 @@ html, body {
   font-family: Arial, Helvetica, sans-serif;
   font-size: calc(11 * var(--u));
   font-weight: bold;
-  color: #555;
+  color: var(--ink);
   letter-spacing: var(--u);
+  text-shadow: 0 calc(1 * var(--u)) 0 rgba(255, 255, 255, 0.5);
 }
 
 .modem-brand-model {
   font-family: Arial, Helvetica, sans-serif;
   font-size: calc(9 * var(--u));
-  color: #444;
+  color: var(--ink-soft);
   letter-spacing: calc(2 * var(--u));
   text-transform: uppercase;
+  text-shadow: 0 calc(1 * var(--u)) 0 rgba(255, 255, 255, 0.45);
 }
 
 /* --- xterm scrollbar hiding --- */
@@ -294,21 +509,31 @@ html, body {
  * assembly to the viewport continuously rather than in fixed breakpoint steps.
  */
 
-/* -------- Transfer status strip (LCD panel style) -------- */
+/* -------- Transfer status strip (monochrome STN LCD) -------- */
 
+/*
+ * A green LCD behind a moulded bezel. Everything inside is drawn from
+ * `currentColor` so the fault states can simply invert the panel — a
+ * monochrome display's only alarm, and the states name themselves in text
+ * besides, so nothing here is carried by colour alone.
+ */
 .modem-xfer {
   display: flex;
   align-items: center;
   gap: calc(8 * var(--u));
   padding: calc(4 * var(--u)) calc(10 * var(--u));
-  background: #001100;
-  color: #55ff55;
+  background: linear-gradient(180deg, #9db08a, #8a9d74);
+  color: var(--lcd-ink);
   font-family: 'PxPlus IBM VGA 8x16', monospace;
   font-size: calc(12 * var(--u));
-  border: 1px solid #003300;
-  border-radius: calc(3 * var(--u));
-  box-shadow: inset 0 0 8px rgba(85, 255, 85, 0.15);
-  text-shadow: 0 0 3px rgba(85, 255, 85, 0.4);
+  border: calc(2 * var(--u)) solid #6f6a54;
+  border-radius: calc(2 * var(--u));
+  /* The panel's min-width eats all the free space, so space-between cannot
+     keep it off the LED labels — hold the gap explicitly. */
+  margin: 0 calc(14 * var(--u));
+  box-shadow:
+    inset 0 0 calc(7 * var(--u)) rgba(0, 0, 0, 0.28),
+    0 var(--u) 0 rgba(255, 255, 255, 0.35);
   min-width: calc(380 * var(--u));
 }
 
@@ -318,7 +543,6 @@ html, body {
 
 .modem-xfer-dir {
   font-weight: bold;
-  color: #ffff55;
 }
 
 .modem-xfer-name {
@@ -339,15 +563,15 @@ html, body {
   display: inline-block;
   width: calc(120 * var(--u));
   height: calc(10 * var(--u));
-  background: #003300;
-  border: 1px solid #005500;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  border: var(--u) solid color-mix(in srgb, currentColor 45%, transparent);
 }
 
 .modem-xfer-fill {
   display: block;
   width: 0%;
   height: 100%;
-  background: #55ff55;
+  background: currentColor;
   transition: width 120ms linear;
 }
 
@@ -356,14 +580,171 @@ html, body {
 }
 
 .modem-xfer-cps { min-width: 8ch; }
-.modem-xfer-eta { color: #55ffff; min-width: 5ch; }
-.modem-xfer-batch { color: #aaaaaa; }
+.modem-xfer-eta { min-width: 5ch; opacity: 0.78; }
+.modem-xfer-batch { opacity: 0.62; }
 
-.modem-xfer.state-aborted { color: #ff5555; text-shadow: 0 0 3px rgba(255, 85, 85, 0.4); }
-.modem-xfer.state-timeout { color: #ffff55; text-shadow: 0 0 3px rgba(255, 255, 85, 0.4); }
+/* Inverse video on fault. */
+.modem-xfer.state-aborted,
+.modem-xfer.state-timeout {
+  background: linear-gradient(180deg, #232c1c, #171d12);
+  color: var(--lcd);
+}
+
+/* -------- Sticky note (client-side scratchpad) -------- */
+
+/*
+ * A Post-it stuck to the monitor, so it is drawn in `--u` like the rest of the
+ * hardware and scales with it. Absolutely positioned on purpose: the fit loop
+ * in app.js sizes the assembly from `.crt-container`'s offset box, and a note
+ * that added to that box would make opening the pad shrink the terminal.
+ *
+ * Closed, only the tab shows, and it sits on the vent strip above the glass —
+ * the note reads as tucked behind the bezel. Open, it hangs down over the
+ * top-right of the screen, which is where one actually ends up on a real
+ * monitor. The right edge is the anchor for both states and for the rotation,
+ * so nothing jumps when it opens.
+ */
+.sticky-note {
+  position: absolute;
+  top: calc(7 * var(--u));
+  right: calc(40 * var(--u));
+  z-index: 20;
+  width: calc(180 * var(--u));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  transform: rotate(-1.8deg);
+  transform-origin: top right;
+  font-family: 'PxPlus IBM VGA 8x16', monospace;
+  color: var(--note-ink);
+}
+
+.sticky-note-tab {
+  display: flex;
+  align-items: center;
+  gap: calc(5 * var(--u));
+  padding: calc(3 * var(--u)) calc(10 * var(--u));
+  border: none;
+  border-radius: calc(2 * var(--u)) calc(2 * var(--u)) 0 0;
+  background-image:
+    var(--plastic-grain),
+    linear-gradient(180deg, var(--note-lit), var(--note));
+  color: inherit;
+  font-family: inherit;
+  font-size: calc(10 * var(--u));
+  letter-spacing: var(--u);
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  box-shadow:
+    0 calc(2 * var(--u)) calc(6 * var(--u)) rgba(0, 0, 0, 0.45),
+    inset 0 var(--u) 0 rgba(255, 255, 255, 0.55);
+}
+
+.sticky-note[data-open="true"] .sticky-note-tab {
+  width: 100%;
+  border-radius: calc(2 * var(--u)) calc(2 * var(--u)) 0 0;
+  box-shadow: inset 0 var(--u) 0 rgba(255, 255, 255, 0.55);
+}
+
+.sticky-note-tab:hover {
+  background-image:
+    var(--plastic-grain),
+    linear-gradient(180deg, #fdf0a6, var(--note-lit));
+}
+
+.sticky-note-tab:focus-visible {
+  outline: calc(2 * var(--u)) solid var(--note-ink);
+  outline-offset: calc(2 * var(--u));
+}
+
+/* Says there is something written in there without opening the pad. */
+.sticky-note-dot {
+  width: calc(5 * var(--u));
+  height: calc(5 * var(--u));
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.75;
+}
+
+.sticky-note[data-has-text="false"] .sticky-note-dot,
+.sticky-note[data-open="true"] .sticky-note-dot {
+  visibility: hidden;
+}
+
+.sticky-note-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: calc(148 * var(--u));
+  padding: calc(7 * var(--u)) calc(9 * var(--u)) calc(5 * var(--u));
+  background-image:
+    var(--plastic-grain),
+    linear-gradient(158deg, var(--note-lit) 0%, var(--note) 55%, var(--note-shade) 100%);
+  border-radius: 0 0 calc(2 * var(--u)) calc(3 * var(--u));
+  /* Lying on the glass: one tight contact shadow, one soft cast one, and a
+     darker band under the tab where the adhesive strip holds it flat. */
+  box-shadow:
+    inset 0 calc(3 * var(--u)) calc(5 * var(--u)) rgba(120, 96, 30, 0.22),
+    0 calc(2 * var(--u)) calc(3 * var(--u)) rgba(0, 0, 0, 0.35),
+    0 calc(9 * var(--u)) calc(20 * var(--u)) rgba(0, 0, 0, 0.5);
+}
+
+.sticky-note-body[hidden] {
+  display: none;
+}
+
+.sticky-note-body:focus-within {
+  box-shadow:
+    inset 0 0 0 calc(2 * var(--u)) color-mix(in srgb, var(--note-ink) 55%, transparent),
+    inset 0 calc(3 * var(--u)) calc(5 * var(--u)) rgba(120, 96, 30, 0.22),
+    0 calc(2 * var(--u)) calc(3 * var(--u)) rgba(0, 0, 0, 0.35),
+    0 calc(9 * var(--u)) calc(20 * var(--u)) rgba(0, 0, 0, 0.5);
+}
+
+.sticky-note-text {
+  flex: 1;
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  caret-color: var(--note-ink);
+  font-family: inherit;
+  font-size: calc(11 * var(--u));
+  line-height: calc(15 * var(--u));
+  /* A scrollbar on paper reads as a widget; the pad scrolls without one, as
+     the terminal viewport does. */
+  scrollbar-width: none;
+}
+
+.sticky-note-text::-webkit-scrollbar {
+  display: none;
+}
+
+.sticky-note-text::placeholder {
+  color: color-mix(in srgb, var(--note-ink) 62%, transparent);
+}
+
+/* Empty in the ordinary case — it only ever carries a persistence failure. */
+.sticky-note-status {
+  font-size: calc(9 * var(--u));
+  line-height: calc(11 * var(--u));
+  color: #7a1f1f;
+}
+
+.sticky-note-status:empty {
+  display: none;
+}
 
 /* -------- Download notification bubbles -------- */
 
+/*
+ * Off-machine UI, so these are sized in px rather than `--u` and styled as the
+ * beveled beige dialogs of the era instead of as part of the modem.
+ */
 .xfer-notifications {
   position: fixed;
   top: 20px;
@@ -377,34 +758,49 @@ html, body {
 
 .xfer-notification {
   pointer-events: auto;
-  background: #001100;
-  color: #55ff55;
-  border: 1px solid #005500;
-  padding: 8px 12px;
+  background: var(--beige);
+  color: var(--ink);
+  padding: 10px 14px;
   font-family: 'PxPlus IBM VGA 8x16', monospace;
   font-size: 14px;
   display: flex;
   align-items: center;
   gap: 12px;
   min-width: 260px;
-  box-shadow: 0 0 12px rgba(85, 255, 85, 0.25);
+  box-shadow:
+    inset 2px 2px 0 rgba(255, 255, 255, 0.7),
+    inset -2px -2px 0 rgba(0, 0, 0, 0.3),
+    0 4px 14px rgba(0, 0, 0, 0.55);
   animation: xfer-slide-in 220ms ease-out;
 }
 
-.xfer-notification.error { color: #ff5555; border-color: #550000; }
+.xfer-notification.error { color: #8a1f1f; }
 
 .xfer-notification button {
-  background: #55ff55;
-  color: #000;
+  background: var(--beige);
+  color: var(--ink);
   border: none;
-  padding: 4px 12px;
+  padding: 5px 14px;
   font-family: inherit;
   font-weight: bold;
   cursor: pointer;
+  box-shadow:
+    inset 2px 2px 0 rgba(255, 255, 255, 0.75),
+    inset -2px -2px 0 rgba(0, 0, 0, 0.35);
 }
 
-.xfer-notification button:hover { background: #aaffaa; }
-.xfer-notification button:focus-visible { outline: 2px solid #ffff55; outline-offset: 2px; }
+.xfer-notification button:hover { background: #e2d8c1; }
+
+.xfer-notification button:active {
+  box-shadow:
+    inset -2px -2px 0 rgba(255, 255, 255, 0.6),
+    inset 2px 2px 0 rgba(0, 0, 0, 0.35);
+}
+
+.xfer-notification button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
 
 @keyframes xfer-slide-in {
   from { opacity: 0; transform: translateX(20px); }

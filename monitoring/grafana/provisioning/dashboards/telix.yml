@@ -1,0 +1,16 @@
+apiVersion: 1
+
+providers:
+  - name: telix
+    orgId: 1
+    folder: ''
+    type: file
+    # The dashboard JSON is mounted read-only, so edits made in the UI cannot be
+    # saved back. Change the JSON in the repo and restart Grafana instead —
+    # that keeps the committed dashboard the single source of truth.
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

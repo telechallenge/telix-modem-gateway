@@ -3,6 +3,12 @@ server:
   max_connections: 100
   max_per_ip: 5
   idle_timeout: 300  # seconds
+  # Directory of ANSI art (.ANS); one file is picked at random per call and
+  # drawn instead of the built-in TELIX banner. This is the path *inside the
+  # container* — docker-compose mounts ./banners here. Empty, missing or holding
+  # no .ans files falls back to the built-in banner, so the gateway runs fine
+  # without it. Running outside Docker (make run)? Point this at ./banners.
+  banner_dir: /etc/telix/banners
 
 logging:
   level: info
@@ -13,7 +19,13 @@ phonebook:
   - number: "206-865-0342"
     host: "host.docker.internal"
     port: 8401
-    name: "Fungus LAND BBS"
+    name: "Fungus LAND BBS (primary)"
+    busy: true 
+
+  - number: "206-866-6000"
+    host: "host.docker.internal"
+    port: 8401
+    name: "Fungus LAND BBS (priority)"
     password: "DECALPHA"
 
   - number: "860-594-0200"
@@ -41,10 +53,10 @@ phonebook:
     port: 2475
     name: "Boringland download"
 
-  - number: "503-294-5966"
+  - number: "503-907-9565"
     host: "host.docker.internal"
     port: 22023
-    name: "Shareware barn"
+    name: "Terminal Velocity"
 
   # Example: number gated by a password. The modem rings and reports CONNECT
   # first, so the prompt (shadow-echoed as '*') looks like the BBS's own login;
@@ -66,3 +78,14 @@ rate_limit:
   max_attempts: 5
   window_seconds: 60
   block_duration: 300
+
+metrics:
+  # Prometheus exposition endpoint, on its own listener so it is never
+  # reachable from a modem session on the telnet port.
+  # Serves /metrics and /healthz.
+  enabled: true
+  port: 9101
+  # Bind inside the container must stay open so Prometheus can reach it over
+  # the compose network; the host-side exposure is restricted by the port
+  # bindings in docker-compose.yml, not here.
+  bind: "0.0.0.0"

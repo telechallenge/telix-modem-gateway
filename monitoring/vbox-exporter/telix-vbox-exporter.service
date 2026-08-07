@@ -1,0 +1,56 @@
+# VirtualBox Prometheus exporter, run as the desktop user rather than in a
+# container: VBoxManage reaches VBoxSVC over an XPCOM IPC socket owned by the
+# user who started the VMs, and a container has neither that socket nor the
+# matching VirtualBox library tree.
+#
+# Install (no sudo -- this is a --user unit):
+#
+#   mkdir -p ~/.config/systemd/user
+#   ln -sf ~/telix-modem-gateway/monitoring/vbox-exporter/telix-vbox-exporter.service \
+#          ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now telix-vbox-exporter
+#   loginctl enable-linger "$USER"   # only if `loginctl show-user $USER -p Linger`
+#                                    # does not already say Linger=yes
+#
+# Lingering is what keeps the unit running when nobody is logged in. Without it
+# the exporter dies with your SSH session and Prometheus reports the target
+# down every time you log out.
+#
+# `make vbox-exporter-install` in the repo root does all of the above.
+
+[Unit]
+Description=Telix VirtualBox Prometheus exporter
+Documentation=https://github.com/telix/monitoring/vbox-exporter/exporter.py
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/telix-modem-gateway/monitoring/vbox-exporter/exporter.py
+
+# Deliberately NOT PrivateTmp=true. VBoxManage talks to VBoxSVC through
+# /tmp/.vbox-$USER-ipc/ipcd, and a private /tmp namespace hides that socket --
+# the exporter then reports vbox_up 0 forever with a "could not connect" that
+# looks exactly like VirtualBox not running.
+#
+# The hardening here is deliberately thin, because a --user unit cannot do the
+# rest. PrivateDevices= and RestrictSUIDSGID= make systemd manipulate the
+# capability bounding set, which an unprivileged user manager is not permitted
+# to do: the service dies at startup with 218/CAPABILITIES ("Failed to drop
+# capabilities: Operation not permitted") before the exporter runs at all.
+# NoNewPrivileges and ProtectSystem need no privilege and do work here.
+#
+# There is little left to confine in any case: the exporter runs as the user who
+# already owns these VMs, only ever reads (VBoxManage queries plus /proc), and
+# its one write is `metrics setup`, which arms VirtualBox's own sampling
+# collector and changes no VM state.
+NoNewPrivileges=true
+ProtectSystem=full
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

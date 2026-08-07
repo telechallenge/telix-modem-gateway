@@ -3,3 +3,7 @@ log/
 web/node_modules/
 web/.playwright-cli/
 coverage.out
+
+# Local monitoring config — contains the Grafana admin password.
+# Commit .env.example instead.
+.env

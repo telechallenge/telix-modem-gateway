@@ -1,0 +1,85 @@
+# Scrape config for the Telix stack.
+#
+# Every target is addressed by its compose service name on telix-net, so none of
+# them publish a port to the host. Adding a target here is the only step needed
+# for it to appear in Grafana — the dashboard queries by job label.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: telix
+
+scrape_configs:
+  # Prometheus' own health.
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # The Go gateway. Port 9101 is metrics.port in configs/telix.yaml — the two
+  # must agree, and there is no service discovery here to paper over a mismatch.
+  - job_name: telix-gateway
+    static_configs:
+      - targets: ['telix:9101']
+        labels:
+          service: gateway
+
+  # The Node web terminal proxy. Shares the app's HTTP port rather than taking
+  # a second listener.
+  - job_name: telix-web
+    static_configs:
+      - targets: ['telix-web:3000']
+        labels:
+          service: web
+
+  # fail2ban ban state, read out of its SQLite database by a read-only sidecar.
+  - job_name: telix-fail2ban
+    static_configs:
+      - targets: ['fail2ban-exporter:9102']
+        labels:
+          service: fail2ban
+
+  # Host vitals. Reports the Docker host's CPU/memory/disk/network via the
+  # read-only /proc and /sys bind mounts in docker-compose.yml.
+  - job_name: node
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: host
+
+  # The ENiGMA1/2 boards in ~/bbs/bbs_infra, read out of their SQLite databases
+  # by a sidecar. One target serves every instance; they are told apart by the
+  # `bbs` label, not by separate scrape jobs, so adding a fourth board needs no
+  # change here.
+  - job_name: enigma-bbs
+    static_configs:
+      - targets: ['bbs-exporter:9104']
+        labels:
+          service: bbs
+
+  # Per-container CPU/memory/network for everything on this Docker host, read
+  # from the Docker API through a GET-only socket proxy. This is the only source
+  # of metrics for the non-ENiGMA boards (boringland_filedrop, warez-server),
+  # which expose nothing of their own.
+  #
+  # Not cAdvisor: Docker 29's containerd image store leaves it unable to map a
+  # cgroup to a container, and it reports only the root cgroup.
+  - job_name: docker
+    static_configs:
+      - targets: ['docker-exporter:9105']
+        labels:
+          service: containers
+
+  # VirtualBox VMs, measured from the host. Unlike every other target this one
+  # is NOT a container: VBoxManage has to run as the user who owns the VMs, so it
+  # is a systemd --user unit reached over the Docker bridge. `host.docker.internal`
+  # is supplied by the extra_hosts entry on the prometheus service in
+  # docker-compose.yml and resolves to the host's docker0 address.
+  #
+  # A down target here means the unit is not running -- `systemctl --user status
+  # telix-vbox-exporter` -- and not that the VMs are gone.
+  - job_name: virtualbox
+    static_configs:
+      - targets: ['host.docker.internal:9103']
+        labels:
+          service: vms

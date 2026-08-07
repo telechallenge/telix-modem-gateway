@@ -15,7 +15,30 @@ type Config struct {
 	Phonebook []PhonebookEntry `yaml:"phonebook"`
 	RateLimit RateLimitConfig  `yaml:"rate_limit"`
 	Dialer    DialerConfig     `yaml:"dialer"`
+	Metrics   MetricsConfig    `yaml:"metrics"`
 	Version   string           `yaml:"-"` // Set at runtime, not from YAML
+}
+
+// MetricsConfig controls the Prometheus endpoint. It listens separately from
+// the telnet port so the exposition endpoint is never reachable from a modem
+// session, and so it can be bound somewhere the telnet listener is not.
+type MetricsConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Port    int    `yaml:"port"`
+	Bind    string `yaml:"bind"` // host to bind; empty means all interfaces
+}
+
+// GetPort returns the metrics port, defaulting to 9101.
+func (m *MetricsConfig) GetPort() int {
+	if m.Port <= 0 {
+		return 9101
+	}
+	return m.Port
+}
+
+// Addr returns the listen address for the metrics endpoint.
+func (m *MetricsConfig) Addr() string {
+	return fmt.Sprintf("%s:%d", m.Bind, m.GetPort())
 }
 
 type DialerConfig struct {
@@ -33,6 +56,10 @@ type ServerConfig struct {
 	MaxConnections int `yaml:"max_connections"`
 	MaxPerIP       int `yaml:"max_per_ip"`
 	IdleTimeout    int `yaml:"idle_timeout"` // seconds
+	// BannerDir holds ANSI art (.ANS) to greet callers with, one file picked at
+	// random per session. Empty, missing or artless falls back to the built-in
+	// banner, so the gateway runs unchanged without it.
+	BannerDir string `yaml:"banner_dir"`
 }
 
 type LoggingConfig struct {
@@ -55,11 +82,15 @@ var ValidBaudRates = map[int]bool{
 }
 
 type PhonebookEntry struct {
-	Number           string           `yaml:"number"`
-	Host             string           `yaml:"host"`
-	Port             int              `yaml:"port"`
-	Name             string           `yaml:"name"`
-	Password         string           `yaml:"password,omitempty"`
+	Number   string `yaml:"number"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Name     string `yaml:"name"`
+	Password string `yaml:"password,omitempty"`
+	// Busy marks a line that is always engaged: dialling it reports BUSY and
+	// no outbound call is ever placed, so host and port go unused and are not
+	// required.
+	Busy             bool             `yaml:"busy,omitempty"`
 	RequiredInit     string           `yaml:"required_init,omitempty"` // deprecated, use required_settings.init
 	RequiredSettings RequiredSettings `yaml:"required_settings,omitempty"`
 }
@@ -155,11 +186,16 @@ func (c *Config) validate() error {
 		if entry.Number == "" {
 			return fmt.Errorf("phonebook[%d]: number is required", i)
 		}
-		if entry.Host == "" {
-			return fmt.Errorf("phonebook[%d]: host is required", i)
-		}
-		if entry.Port < 1 || entry.Port > 65535 {
-			return fmt.Errorf("phonebook[%d]: port must be 1-65535, got %d", i, entry.Port)
+		// A busy entry never dials, so there is nothing for host and port to
+		// point at — requiring them would force an operator to invent an
+		// unreachable host for a number that is only ever engaged.
+		if !entry.Busy {
+			if entry.Host == "" {
+				return fmt.Errorf("phonebook[%d]: host is required", i)
+			}
+			if entry.Port < 1 || entry.Port > 65535 {
+				return fmt.Errorf("phonebook[%d]: port must be 1-65535, got %d", i, entry.Port)
+			}
 		}
 		if entry.RequiredSettings.Baud != 0 && !ValidBaudRates[entry.RequiredSettings.Baud] {
 			return fmt.Errorf("phonebook[%d]: invalid required baud rate %d", i, entry.RequiredSettings.Baud)
