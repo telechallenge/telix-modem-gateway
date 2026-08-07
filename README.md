@@ -436,6 +436,8 @@ An entry with `busy: true` is a line that is permanently engaged — dialing it 
 
 The caller hears no ringing (the telco returns busy tone instead of ringback), and **no outbound connection is ever placed** — which makes this the way to take a BBS out of service without removing its number from the phonebook. `host` and `port` are unused and may be omitted; `required_settings` and `password` are never reached, since a busy line is engaged before any negotiation or login. Dials are counted in `telix_dials_total` with `outcome="busy"`.
 
+The same rule holds for the other way a dial ends in `BUSY` — a host that refuses the connection. **`BUSY` never follows a `RING`**: every dial spends a second or two being "routed" before anything is reported, and a refusal that comes back in that window reports `BUSY` with no ringing at all. A ring is the caller's proof the line was free, so on the rare occasion a refusal arrives after ringing has started, the call ends in `NO CARRIER` instead.
+
 ## AT command reference
 
 ### Standard commands

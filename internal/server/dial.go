@@ -123,7 +123,27 @@ func (s *Session) handleDial(number string) {
 		ch <- dialResult{conn, err}
 	}()
 
-	// Send 1-2 mandatory rings before checking the dial result,
+	// Let the call spend the time a real one spends being routed before
+	// anything is reported. An engaged line answers with busy tone at the end
+	// of that gap and never rings, so a refusal has to be settled here: once
+	// the caller has heard ringback, they have proof the line was free, and a
+	// BUSY after it would contradict what they just heard.
+	var res dialResult
+	resolved := false
+	s.callSetupPause()
+	select {
+	case res = <-ch:
+		resolved = true
+	default:
+	}
+	if resolved && res.err != nil && isConnectionRefused(res.err) {
+		t.outcome = metrics.OutcomeBusy
+		s.logger.ConnectionAttempt(number, "failed")
+		s.sendResult(modem.ResultBusy)
+		return
+	}
+
+	// Send 1-2 mandatory rings before reporting the dial result,
 	// so the user always hears ringing before a connection is picked up.
 	mandatoryRings := 1 + rand.Intn(2)
 	for i := 0; i < mandatoryRings; i++ {
@@ -133,55 +153,35 @@ func (s *Session) handleDial(number string) {
 
 	// Continue ringing (0-2 more) while checking for dial completion
 	extraRings := rand.Intn(3)
-	for i := 0; i < extraRings; i++ {
+	for i := 0; !resolved && i < extraRings; i++ {
 		s.sendResult(modem.ResultRing)
 		select {
-		case res := <-ch:
-			// Connection resolved during ringing
-			if res.err != nil {
-				s.logger.ConnectionAttempt(number, "failed")
-				if isConnectionRefused(res.err) {
-					t.outcome = metrics.OutcomeBusy
-					s.sendResult(modem.ResultBusy)
-				} else {
-					t.outcome = metrics.OutcomeNoCarrier
-					s.sendResult(modem.ResultNoCarrier)
-				}
-				return
-			}
-			s.remoteMu.Lock()
-			s.remoteConn = res.conn
-			s.remoteMu.Unlock()
-			s.modemHandshakePause()
-			s.modem.SetState(modem.StateData)
-			t.outcome = metrics.OutcomeSuccess
-			s.logger.ConnectionAttempt(number, "success")
-			s.sendConnect(entry.RequiredSettings.Baud)
-			return
+		case res = <-ch:
+			resolved = true
 		case <-time.After(time.Duration(2500+rand.Intn(1000)) * time.Millisecond):
 			// Keep ringing
 		}
 	}
 
 	// Done ringing, wait for dial to finish with a safety timeout
-	var res dialResult
-	select {
-	case res = <-ch:
-	case <-time.After(timeout + 5*time.Second):
-		t.outcome = metrics.OutcomeTimeout
-		s.logger.ConnectionAttempt(number, "failed")
-		s.sendResult(modem.ResultNoCarrier)
-		return
+	if !resolved {
+		select {
+		case res = <-ch:
+		case <-time.After(timeout + 5*time.Second):
+			t.outcome = metrics.OutcomeTimeout
+			s.logger.ConnectionAttempt(number, "failed")
+			s.sendResult(modem.ResultNoCarrier)
+			return
+		}
 	}
 	if res.err != nil {
+		// A refusal only reaches this point when it took longer to come back
+		// than the call took to route — the caller has already heard ringback,
+		// so the honest report is a dropped carrier rather than a busy line
+		// that demonstrably rang.
+		t.outcome = metrics.OutcomeNoCarrier
 		s.logger.ConnectionAttempt(number, "failed")
-		if isConnectionRefused(res.err) {
-			t.outcome = metrics.OutcomeBusy
-			s.sendResult(modem.ResultBusy)
-		} else {
-			t.outcome = metrics.OutcomeNoCarrier
-			s.sendResult(modem.ResultNoCarrier)
-		}
+		s.sendResult(modem.ResultNoCarrier)
 		return
 	}
 
@@ -374,11 +374,19 @@ func (s *Session) sendNoAnswer() {
 	s.sendResult(modem.ResultNoAnswer)
 }
 
+// callSetupPause simulates the gap between the last dialled digit and the
+// first ringback or busy tone — the time a real call spends being routed.
+// Every dial spends it, which is what gives a refused connection the chance to
+// come back before any ringing has been reported.
+func (s *Session) callSetupPause() {
+	time.Sleep(time.Duration(1200+rand.Intn(800)) * time.Millisecond)
+}
+
 // sendBusy simulates dialling a line that is already engaged: the modem dials
 // out, hears busy tone instead of ringback, and reports BUSY. No RING is sent,
 // since the far end never rings.
 func (s *Session) sendBusy() {
-	time.Sleep(time.Duration(1500+rand.Intn(1000)) * time.Millisecond)
+	s.callSetupPause()
 	s.sendResult(modem.ResultBusy)
 }
 

@@ -421,6 +421,81 @@ func TestHandleDial_BusyEntryAlwaysReportsBusy(t *testing.T) {
 	assertScrapeHas(t, scrape(t, m), `telix_dials_total{entry="engaged",outcome="busy"} 1`)
 }
 
+// closedPort returns a loopback port with nothing listening on it, so a dial
+// there is refused outright rather than left hanging.
+func closedPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// A busy signal must never follow ringback. Hearing a ring is the caller's
+// proof that the line was free, so a refused connection — the other way a dial
+// ends in BUSY — has to be settled before the first RING, exactly like a
+// busy-flagged entry.
+func TestHandleDial_RefusedConnectionReportsBusyWithoutRinging(t *testing.T) {
+	cfg := &config.Config{
+		Version: "test",
+		Phonebook: []config.PhonebookEntry{{
+			Number: "555-1212", Name: "refused", Host: "127.0.0.1", Port: closedPort(t),
+		}},
+	}
+	s, m := metricsSession(t, cfg)
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	s.conn = server
+	rec := recordClient(t, client)
+
+	s.handleDial("555-1212")
+	rec.waitFor(t, "BUSY")
+
+	if out := rec.text(); strings.Contains(out, "RING") {
+		t.Errorf("a refused connection rang before reporting BUSY, got %q", out)
+	}
+	assertScrapeHas(t, scrape(t, m), `telix_dials_total{entry="refused",outcome="busy"} 1`)
+}
+
+// Settling a refusal before the first ring must not cost the success path its
+// ringback: a call that connects instantly still has to ring before CONNECT,
+// or the caller watches a BBS answer a phone that never rang.
+func TestHandleDial_SuccessfulDialRingsBeforeConnect(t *testing.T) {
+	bbs := fakeBBS(t)
+	cfg := &config.Config{
+		Version: "test",
+		Phonebook: []config.PhonebookEntry{{
+			Number: "555-1212", Name: "open", Host: bbs.host, Port: bbs.port,
+		}},
+	}
+	s, _ := metricsSession(t, cfg)
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	s.conn = server
+	t.Cleanup(s.hangup)
+	rec := recordClient(t, client)
+
+	s.handleDial("555-1212")
+	rec.waitFor(t, "CONNECT")
+
+	out := rec.text()
+	ringAt := strings.Index(out, "RING")
+	connectAt := strings.Index(out, "CONNECT")
+	if ringAt < 0 || connectAt < ringAt {
+		t.Errorf("expected at least one RING before CONNECT, got %q", out)
+	}
+	if s.modem.State() != modem.StateData {
+		t.Errorf("modem state = %v after a connected call, want StateData", s.modem.State())
+	}
+}
+
 // A busy line is engaged before any negotiation happens, so the settings check
 // must not get a say: an entry that is both busy and picky reports BUSY, not
 // the garbage-CONNECT of a settings mismatch.
