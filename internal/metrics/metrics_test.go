@@ -114,6 +114,28 @@ func TestMetrics_RecordedActivityAppearsInScrape(t *testing.T) {
 			},
 		},
 		{
+			name: "a reachability probe publishes the verdict, its cost and when it ran",
+			record: func(m *Metrics) {
+				m.BBSProbed("Telehack", "telehack.com:23", true, 120*time.Millisecond)
+				m.BBSProbed("Dead BBS", "192.0.2.1:23", false, 5*time.Second)
+			},
+			want: []string{
+				`telix_bbs_reachable{address="telehack.com:23",entry="Telehack"} 1`,
+				`telix_bbs_reachable{address="192.0.2.1:23",entry="Dead BBS"} 0`,
+				`telix_bbs_probe_duration_seconds{address="telehack.com:23",entry="Telehack"} 0.12`,
+				`telix_bbs_probe_duration_seconds{address="192.0.2.1:23",entry="Dead BBS"} 5`,
+				`telix_bbs_last_probe_timestamp_seconds{address="telehack.com:23",entry="Telehack"}`,
+			},
+		},
+		{
+			name: "a board that comes back up flips its gauge rather than adding a series",
+			record: func(m *Metrics) {
+				m.BBSProbed("Fungus Land", "10.0.0.1:8401", false, time.Second)
+				m.BBSProbed("Fungus Land", "10.0.0.1:8401", true, 10*time.Millisecond)
+			},
+			want: []string{`telix_bbs_reachable{address="10.0.0.1:8401",entry="Fungus Land"} 1`},
+		},
+		{
 			name: "an active dial is tracked while it is in flight",
 			record: func(m *Metrics) {
 				m.DialStarted()
@@ -174,6 +196,26 @@ func TestMetrics_ServerExposesMetricsOverHTTP(t *testing.T) {
 	}
 }
 
+// The reachability gauges only cover lines the prober dials, so a phonebook of
+// always-busy decoys is invisible to them — the dashboard silently showed
+// fewer boards than the phone list held. The inventory series is what accounts
+// for the rest: every entry appears exactly once, carrying whether it is busy,
+// whether or not anything ever probes it.
+func TestMetrics_PhonebookInventoryCoversBusyAndDialableLines(t *testing.T) {
+	m := New()
+
+	m.PhonebookLine("Terminal Velocity", "host.docker.internal:22023", false)
+	m.PhonebookLine("Recipe Box", "host.docker.internal:22023", true)
+	m.PhonebookLine("", "", true) // unnamed, and busy entries need no host
+
+	body := gather(t, m)
+	mustContain(t, body,
+		`telix_phonebook_entry{address="host.docker.internal:22023",busy="false",entry="Terminal Velocity"} 1`,
+		`telix_phonebook_entry{address="host.docker.internal:22023",busy="true",entry="Recipe Box"} 1`,
+		`telix_phonebook_entry{address="",busy="true",entry="unnamed"} 1`,
+	)
+}
+
 // A nil *Metrics is what every call site holds when metrics are disabled in
 // config, so every method must tolerate it rather than forcing nil checks (and
 // the panics a missed one would cause) into the session hot path.
@@ -193,4 +235,6 @@ func TestMetrics_NilReceiverIsSafe(t *testing.T) {
 	m.DialStarted()
 	m.DialCompleted("x", OutcomeSuccess, time.Second)
 	m.BytesTransferred(DirectionToClient, 10)
+	m.BBSProbed("x", "h:23", true, time.Second)
+	m.PhonebookLine("x", "h:23", false)
 }

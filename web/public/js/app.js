@@ -208,49 +208,93 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // WebSocket connection
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/ws`);
-  ws.binaryType = 'arraybuffer';
 
+  let ws = null;
   let bridge = null;
-  let config = { maxUploadBytes: 1073741824, zmodemTimeoutSec: 30 };
+  let config = { maxUploadBytes: 1073741824, zmodemTimeoutSec: 30, zmodemBlockSize: 0 };
 
   fetch('/config.json')
     .then(r => r.json())
-    .then(c => { config = c; })
+    // Merge rather than replace: the bridge is built on the first WebSocket
+    // frame and captures whatever object `config` points at then, so swapping in
+    // a new one would strand it on the defaults whenever the banner beats the
+    // fetch.
+    .then(c => { Object.assign(config, c); })
     .catch(() => { /* use defaults */ });
 
-  ws.onopen = () => {
-    ledOn('tr');
-    ledOn('aa');
-    sendResize();
-  };
+  // The reset button on the glass, shown only once the link is down. Nothing
+  // reconnects on its own: a gateway session is a phone call, and silently
+  // redialling one that dropped mid-transfer would be worse than saying so.
+  const rebootPanel = document.getElementById('crtReboot');
+  const rebootBtn = document.getElementById('crtRebootBtn');
 
-  ws.onmessage = (event) => {
-    if (!(event.data instanceof ArrayBuffer)) {
-      // ws.binaryType is 'arraybuffer' (see above); anything else means a bug
-      // upstream or a broken environment. Loud failure beats silent reordering.
-      console.error('WebSocket delivered non-binary frame; dropping', typeof event.data);
-      return;
-    }
-    if (!bridge) {
-      bridge = window.ZmodemSentry.createZmodemBridge({
-        ws, term, config, checkModemState, flashLed,
-      });
-    }
-    bridge.consume(new Uint8Array(event.data));
-  };
+  function showReboot(on) {
+    if (!rebootPanel) return;
+    rebootPanel.hidden = !on;
+    // Move focus onto the button so the keyboard can reach it — the terminal
+    // swallows keystrokes otherwise — and hand focus straight back afterwards.
+    if (on && rebootBtn) rebootBtn.focus();
+  }
 
-  ws.onclose = () => {
-    term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
-    ledOff('tr');
-    ledOff('aa');
-    setConnected(false);
-    ModemAudio.stopAll();
-  };
+  function connect() {
+    // A socket still opening or open is the one we want; making a second would
+    // leave the first delivering bytes into a bridge that no longer exists.
+    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
 
-  ws.onerror = () => {
-    term.write('\r\n\x1b[1;31m[Connection error]\x1b[0m\r\n');
-  };
+    showReboot(false);
+    // The gateway greets a new session with its banner, so start from a clean
+    // screen — this is a reboot, not a resumption.
+    term.reset();
+    bridge = null; // a bridge holds the socket it was built on
+
+    const socket = new WebSocket(`${proto}//${location.host}/ws`);
+    socket.binaryType = 'arraybuffer';
+    ws = socket;
+
+    socket.onopen = () => {
+      ledOn('tr');
+      ledOn('aa');
+      sendResize();
+      term.focus();
+    };
+
+    socket.onmessage = (event) => {
+      if (!(event.data instanceof ArrayBuffer)) {
+        // ws.binaryType is 'arraybuffer' (see above); anything else means a bug
+        // upstream or a broken environment. Loud failure beats silent reordering.
+        console.error('WebSocket delivered non-binary frame; dropping', typeof event.data);
+        return;
+      }
+      if (!bridge) {
+        bridge = window.ZmodemSentry.createZmodemBridge({
+          ws: socket, term, config, checkModemState, flashLed,
+        });
+      }
+      bridge.consume(new Uint8Array(event.data));
+    };
+
+    socket.onclose = () => {
+      // A superseded socket can still fire this after a reconnect has begun;
+      // ignoring it keeps a dead one from putting the reset button back over a
+      // live session.
+      if (ws !== socket) return;
+      term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
+      ledOff('tr');
+      ledOff('aa');
+      setConnected(false);
+      ModemAudio.stopAll();
+      showReboot(true);
+    };
+
+    socket.onerror = () => {
+      if (ws !== socket) return;
+      term.write('\r\n\x1b[1;31m[Connection error]\x1b[0m\r\n');
+      // No panel here: an error is always followed by a close, which owns it.
+    };
+  }
+
+  if (rebootBtn) rebootBtn.addEventListener('click', connect);
+  connect();
 
   // Send keystrokes to server
   let cmdBuffer = '';

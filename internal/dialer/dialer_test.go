@@ -3,6 +3,7 @@ package dialer
 import (
 	"bytes"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -558,6 +559,79 @@ func TestDialerDial_RejectedByNetwork(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("Dial should return an error when IP is outside allowed networks")
+	}
+	if !strings.Contains(err.Error(), "not in allowed networks") {
+		t.Errorf("error should mention 'not in allowed networks', got: %v", err)
+	}
+}
+
+// Probe is the reachability check behind telix_bbs_reachable. It answers one
+// question — will this endpoint accept a TCP connection — and must answer it
+// without leaving a trace on the board: no telnet negotiation, no lingering
+// socket. A BBS logs a call the moment it sees terminal-type chatter, so a
+// probe that negotiated would fill the board's caller log every minute.
+func TestDialerProbe(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Record whatever the probe sends before hanging up.
+	sent := make(chan []byte, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 64)
+		n, _ := conn.Read(buf)
+		sent <- buf[:n]
+	}()
+
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+
+	d := New(2*time.Second, nil)
+	if err := d.Probe(host, port); err != nil {
+		t.Fatalf("Probe of a listening endpoint failed: %v", err)
+	}
+
+	select {
+	case got := <-sent:
+		if len(got) != 0 {
+			t.Errorf("Probe wrote %d bytes to the board (%v), want none", len(got), got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("listener never saw the probe's connection close")
+	}
+}
+
+func TestDialerProbe_ClosedPortFails(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	ln.Close()
+	port, _ := strconv.Atoi(portStr)
+
+	if err := New(2*time.Second, nil).Probe("127.0.0.1", port); err == nil {
+		t.Error("Probe of a closed port returned nil, want an error")
+	}
+}
+
+// A probe is an outbound connection like any other, so the allowlist binds it —
+// otherwise the one thing that dials every phonebook host on a timer would be
+// the one thing exempt from the setting that exists to stop that.
+func TestDialerProbe_RejectedByNetwork(t *testing.T) {
+	d := New(2*time.Second, []*net.IPNet{mustParseCIDR(t, "10.0.0.0/8")})
+
+	err := d.Probe("127.0.0.1", 9999)
+	if err == nil {
+		t.Fatal("Probe should be rejected for an IP outside allowed networks")
 	}
 	if !strings.Contains(err.Error(), "not in allowed networks") {
 		t.Errorf("error should mention 'not in allowed networks', got: %v", err)

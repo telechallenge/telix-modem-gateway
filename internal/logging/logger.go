@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -54,8 +55,22 @@ func ParseLevel(s string) Level {
 type Logger struct {
 	mu     sync.Mutex
 	output io.Writer
-	level  Level
-	json   bool
+	// level is atomic because SetLevel can move it while sessions are logging,
+	// and the filter in Msg is deliberately outside the output mutex — an
+	// event below the threshold should cost nothing and contend with nothing.
+	level atomic.Int32
+	json  bool
+}
+
+// SetLevel changes the threshold on a running logger, so a live gateway can be
+// turned up to debug and back down without dropping its callers.
+func (l *Logger) SetLevel(level string) {
+	l.level.Store(int32(ParseLevel(level)))
+}
+
+// Level reports the current threshold.
+func (l *Logger) Level() Level {
+	return Level(l.level.Load())
 }
 
 func New(level, format, file string) (*Logger, error) {
@@ -76,11 +91,12 @@ func New(level, format, file string) (*Logger, error) {
 		output = io.MultiWriter(os.Stdout, logFile)
 	}
 
-	return &Logger{
+	l := &Logger{
 		output: output,
-		level:  ParseLevel(level),
 		json:   format == "json",
-	}, nil
+	}
+	l.level.Store(int32(ParseLevel(level)))
+	return l, nil
 }
 
 type Event struct {
@@ -131,7 +147,7 @@ func (e *Event) Err(err error) *Event {
 }
 
 func (e *Event) Msg(msg string) {
-	if e.level < e.logger.level {
+	if e.level < e.logger.Level() {
 		return
 	}
 

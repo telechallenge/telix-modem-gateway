@@ -810,3 +810,94 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .xfer-notification { animation: none; }
 }
+
+/*
+ * Reset button, shown on the glass when the link to the gateway drops.
+ *
+ * Absolutely positioned inside .crt-screen for the same reason the sticky note
+ * is inside .crt-monitor: the fit loop measures .crt-container's offset box, so
+ * anything that took part in layout would resize the terminal the moment it
+ * appeared. Painted last in the screen, so it sits over the scanlines and glass
+ * rather than being tinted by them — a button you have to squint through is not
+ * a button.
+ *
+ * Drawn from the same beige-plastic tokens as the monitor and modem, so it
+ * reads as the machine's own reset switch surfacing on a dead screen rather
+ * than as web furniture.
+ */
+.crt-reboot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(18 * var(--u));
+  background: rgba(6, 8, 6, 0.72);
+  z-index: 5;
+}
+
+.crt-reboot[hidden] { display: none; }
+
+.crt-reboot-msg {
+  margin: 0;
+  font-family: "IBM VGA", "Px437 IBM VGA8", monospace;
+  font-size: calc(13 * var(--u));
+  letter-spacing: calc(1 * var(--u));
+  color: #ff6a48;
+  text-shadow: 0 0 calc(6 * var(--u)) rgba(255, 60, 20, 0.55);
+}
+
+.crt-reboot-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(7 * var(--u));
+  padding: calc(11 * var(--u)) calc(15 * var(--u)) calc(9 * var(--u));
+  border: 0;
+  border-radius: calc(5 * var(--u));
+  cursor: pointer;
+  background-color: var(--beige);
+  background-image: var(--plastic-grain);
+  box-shadow:
+    inset 0 calc(1 * var(--u)) 0 var(--beige-lit),
+    inset 0 calc(-2 * var(--u)) 0 var(--beige-shade),
+    0 calc(3 * var(--u)) 0 var(--beige-deep),
+    0 calc(5 * var(--u)) calc(10 * var(--u)) rgba(0, 0, 0, 0.55);
+}
+
+/* Travel, not colour change: a moulded button that lights up reads as an LED. */
+.crt-reboot-btn:active {
+  transform: translateY(calc(2 * var(--u)));
+  box-shadow:
+    inset 0 calc(1 * var(--u)) 0 var(--beige-lit),
+    inset 0 calc(-1 * var(--u)) 0 var(--beige-shade),
+    0 calc(1 * var(--u)) 0 var(--beige-deep),
+    0 calc(2 * var(--u)) calc(5 * var(--u)) rgba(0, 0, 0, 0.5);
+}
+
+.crt-reboot-btn:focus-visible {
+  outline: calc(2 * var(--u)) solid #ffd18a;
+  outline-offset: calc(3 * var(--u));
+}
+
+/* The recessed red cap, in the red of a beige-cased unit — same family as the
+   modem's LEDs rather than the black-case green. */
+.crt-reboot-cap {
+  width: calc(26 * var(--u));
+  height: calc(26 * var(--u));
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 30%, #ff8f6b, #d8300f 58%, #8d1503 100%);
+  box-shadow:
+    inset 0 0 0 calc(1 * var(--u)) rgba(0, 0, 0, 0.35),
+    inset 0 calc(-2 * var(--u)) calc(3 * var(--u)) rgba(0, 0, 0, 0.4),
+    0 0 calc(7 * var(--u)) rgba(255, 70, 20, 0.35);
+}
+
+.crt-reboot-label {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: calc(9 * var(--u));
+  font-weight: bold;
+  letter-spacing: calc(1 * var(--u));
+  color: var(--ink);
+}

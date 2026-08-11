@@ -2,10 +2,12 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeNumber(t *testing.T) {
@@ -399,6 +401,62 @@ dialer:
 	}
 }
 
+// A typo in trusted_proxies would silently leave the per-IP limits applied to
+// the web proxy — the exact fault the setting removes, and invisible until
+// users start being refused. It must fail at startup, and the parsed set must
+// actually reach the server.
+func TestLoadConfigTrustedProxies(t *testing.T) {
+	base := `
+server:
+  port: 2323
+  max_connections: 50
+  max_per_ip: 3
+  trusted_proxies:
+    - %q
+
+phonebook:
+  - number: "916-555-1212"
+    host: "127.0.0.1"
+    port: 23
+    name: "Test BBS"
+`
+	write := func(t *testing.T, cidr string) string {
+		t.Helper()
+		f, err := os.CreateTemp("", "config*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Remove(f.Name()) })
+		if _, err := f.WriteString(fmt.Sprintf(base, cidr)); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		return f.Name()
+	}
+
+	t.Run("invalid CIDR is a startup error", func(t *testing.T) {
+		if _, err := Load(write(t, "172.16.0.0/99")); err == nil {
+			t.Fatal("expected error for invalid trusted_proxies CIDR")
+		} else if !strings.Contains(err.Error(), "invalid CIDR") {
+			t.Errorf("error should mention 'invalid CIDR', got: %v", err)
+		}
+	})
+
+	t.Run("valid CIDR is parsed and reachable", func(t *testing.T) {
+		cfg, err := Load(write(t, "172.16.0.0/12"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		nets := cfg.Server.ParsedTrustedProxies()
+		if len(nets) != 1 {
+			t.Fatalf("expected 1 parsed network, got %d", len(nets))
+		}
+		if !nets[0].Contains(net.ParseIP("172.19.0.6")) {
+			t.Errorf("parsed network %v should contain the web proxy address", nets[0])
+		}
+	})
+}
+
 func TestLoadConfigEmptyAllowedNetworks(t *testing.T) {
 	yamlData := `
 server:
@@ -724,5 +782,127 @@ phonebook:
 	}
 	if cfg.Metrics.Enabled {
 		t.Error("Metrics.Enabled = true for a config with no metrics section, want false")
+	}
+}
+
+// The telnet override decides whether 0xFF is doubled toward a board, and a
+// typo silently falling back to the inference would reinstate exactly the
+// failure the setting exists to cure.
+func TestPhonebookTelnetMode(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", "auto"}, {"auto", "auto"}, {"yes", "yes"}, {"no", "no"},
+		{"YES", "yes"}, {" no ", "no"},
+	} {
+		if got := (PhonebookEntry{Telnet: tc.in}).TelnetMode(); got != tc.want {
+			t.Errorf("TelnetMode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	cfg := &Config{
+		Server:    ServerConfig{Port: 2323, MaxConnections: 1, MaxPerIP: 1},
+		Phonebook: []PhonebookEntry{{Number: "5551212", Host: "h", Port: 23, Telnet: "ture"}},
+	}
+	if err := cfg.validate(); err == nil {
+		t.Error("a misspelled telnet value must be rejected at load, not defaulted away")
+	}
+}
+
+// The probe interval reaches third-party boards — telehack.com is in the
+// shipped phonebook — so an operator who types 1 second must not get 1 second.
+// The floor is the same reasoning as S12's minimum guard time: a value below it
+// is abusive rather than merely aggressive.
+func TestProbeConfigDefaults(t *testing.T) {
+	tests := []struct {
+		name         string
+		cfg          ProbeConfig
+		wantInterval time.Duration
+		wantTimeout  time.Duration
+	}{
+		{
+			name:         "unset interval and timeout fall back to 60s and 5s",
+			cfg:          ProbeConfig{Enabled: true},
+			wantInterval: 60 * time.Second,
+			wantTimeout:  5 * time.Second,
+		},
+		{
+			name:         "explicit values are used verbatim",
+			cfg:          ProbeConfig{Enabled: true, Interval: 300, Timeout: 12},
+			wantInterval: 300 * time.Second,
+			wantTimeout:  12 * time.Second,
+		},
+		{
+			name:         "an interval under the floor is raised to it",
+			cfg:          ProbeConfig{Enabled: true, Interval: 1},
+			wantInterval: MinProbeInterval,
+			wantTimeout:  5 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.GetInterval(); got != tt.wantInterval {
+				t.Errorf("GetInterval() = %v, want %v", got, tt.wantInterval)
+			}
+			if got := tt.cfg.GetTimeout(); got != tt.wantTimeout {
+				t.Errorf("GetTimeout() = %v, want %v", got, tt.wantTimeout)
+			}
+		})
+	}
+}
+
+// Probing dials every board in the phonebook on a timer, several of them run by
+// other people. An upgrade that starts doing that on its own is not a decision
+// the gateway gets to make, so an absent section leaves it off — the same
+// contract the metrics section has.
+func TestLoadConfigProbeSection(t *testing.T) {
+	base := `
+server:
+  port: 2323
+  max_connections: 100
+  max_per_ip: 3
+phonebook:
+  - number: "555-1234"
+    host: "bbs.example.com"
+    port: 23
+    name: "Test BBS"
+`
+	for _, tt := range []struct {
+		name        string
+		extra       string
+		wantEnabled bool
+		wantEvery   time.Duration
+	}{
+		{name: "absent section leaves probing off", extra: "", wantEnabled: false},
+		{
+			name:        "enabled with an explicit interval",
+			extra:       "probe:\n  enabled: true\n  interval: 120\n  timeout: 3\n",
+			wantEnabled: true,
+			wantEvery:   120 * time.Second,
+		},
+		{
+			name:        "enabled with defaults",
+			extra:       "probe:\n  enabled: true\n",
+			wantEnabled: true,
+			wantEvery:   60 * time.Second,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "telix.yaml")
+			if err := os.WriteFile(path, []byte(base+tt.extra), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			if cfg.Probe.Enabled != tt.wantEnabled {
+				t.Errorf("Probe.Enabled = %v, want %v", cfg.Probe.Enabled, tt.wantEnabled)
+			}
+			if tt.wantEnabled {
+				if got := cfg.Probe.GetInterval(); got != tt.wantEvery {
+					t.Errorf("Probe.GetInterval() = %v, want %v", got, tt.wantEvery)
+				}
+			}
+		})
 	}
 }

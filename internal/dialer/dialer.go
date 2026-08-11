@@ -73,6 +73,31 @@ func (d *Dialer) Dial(host string, port int) (net.Conn, error) {
 	return conn, nil
 }
 
+// Probe reports whether host:port will accept a TCP connection, hanging up
+// immediately. Allowed networks bind it exactly as they bind Dial — the one
+// thing that contacts every phonebook host on a timer must not be the one thing
+// exempt from the setting that exists to stop that.
+//
+// It deliberately does not negotiate telnet. A BBS treats terminal-type chatter
+// as the start of a call and writes it to its caller log, so a negotiating
+// probe would fill a board's log with a phantom call every interval. A bare
+// connect-and-close is what "is the line answering" means, and it is also all
+// this can honestly claim: a board that accepts the socket and then refuses to
+// let anybody log in still reads as reachable.
+func (d *Dialer) Probe(host string, port int) error {
+	if len(d.allowedNetworks) > 0 {
+		if err := d.checkAllowed(host); err != nil {
+			return err
+		}
+	}
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)), d.timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
 // checkAllowed resolves the host and verifies all IPs are within allowed networks.
 func (d *Dialer) checkAllowed(host string) error {
 	// If host is already an IP, parse directly

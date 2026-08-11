@@ -19,6 +19,7 @@ function makeEl(tag) {
     children: [],
     dataset: {},
     classList: { add() {}, remove() {}, contains() { return false; } },
+    setAttribute(k, v) { el[k] = v; },
     addEventListener: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
     removeEventListener: (ev, fn) => { listeners[ev] = (listeners[ev] || []).filter(f => f !== fn); },
     appendChild: c => { el.children.push(c); return c; },
@@ -33,7 +34,7 @@ function makeEl(tag) {
   return el;
 }
 
-function loadUI() {
+function loadUI(opts) {
   const ids = ['xferStrip', 'xferDir', 'xferName', 'xferPct', 'xferFill', 'xferCps',
     'xferEta', 'xferBatch', 'xferNotifications', 'xferUploadInput', 'muteBtn', 'muteIcon'];
   const els = {};
@@ -47,17 +48,31 @@ function loadUI() {
     addEventListener() {},
     body: makeEl('body'),
   };
+  const store = (opts && opts.store) || new Map();
   const g = {
     console, document,
     window: null,
     setTimeout, clearTimeout,
     URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
   };
+  // Site data blocked (or a sandboxed frame) makes even the *property lookup*
+  // throw, not just the write, so model it as a throwing getter rather than as
+  // methods that fail.
+  if (opts && opts.storageBlocked) {
+    Object.defineProperty(g, 'localStorage', {
+      get() { throw new Error('SecurityError: access denied'); },
+    });
+  } else {
+    g.localStorage = {
+      getItem: k => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => store.set(k, String(v)),
+    };
+  }
   g.window = g;
   g.window.XferUtil = { sanitizeFilename: s => s, formatBytes: () => '1 KB', formatDuration: () => '0s' };
   vm.createContext(g);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'zmodem-ui.js'), 'utf8'), g, { filename: 'zmodem-ui.js' });
-  return { ui: g.window.ZmodemUI, uploadInput, notifications: els.xferNotifications };
+  return { ui: g.window.ZmodemUI, uploadInput, notifications: els.xferNotifications, store };
 }
 
 test('promptUpload does NOT open the picker until the user clicks the button', () => {

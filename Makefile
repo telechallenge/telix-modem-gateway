@@ -3,7 +3,9 @@ CMD       := ./cmd/telix
 CONFIG    := configs/telix.yaml
 GO        := go
 GOFLAGS   := -trimpath
-VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+# Leading "v" stripped: the banner, ATI and the startup log all print their own
+# "v" prefix, and tags here are v-prefixed, so keeping it renders as "vv0.1.0".
+VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo "dev")
 LDFLAGS   := -s -w -X main.version=$(VERSION)
 
 .PHONY: all build clean test vet fmt run docker docker-up docker-down web-install web-dev
@@ -32,7 +34,7 @@ docker:
 	docker build -t $(BINARY) .
 
 docker-up:
-	docker compose up -d
+	TELIX_VERSION=$(VERSION) docker compose up -d --build
 
 docker-down:
 	docker compose down
@@ -40,7 +42,10 @@ docker-down:
 .PHONY: monitoring-up monitoring-down monitoring-logs
 # `docker compose up -d` already starts these; these targets are for working on
 # the monitoring stack without cycling the gateway.
-MONITORING_SVCS := prometheus node-exporter grafana bbs-exporter fail2ban-exporter \
+# fail2ban-exporter is deliberately absent: it and fail2ban are behind the
+# "fail2ban" compose profile and do not start. Naming it here would make
+# monitoring-up fail on a service compose does not consider active.
+MONITORING_SVCS := prometheus node-exporter grafana bbs-exporter \
                    docker-exporter docker-socket-proxy
 
 monitoring-up:
@@ -61,11 +66,20 @@ monitoring-reload:
 	docker compose up -d --force-recreate prometheus
 
 .PHONY: bans unban unban-all
+# These need fail2ban running, and it is behind the "fail2ban" compose profile
+# and off by default — see the fail2ban service in docker-compose.yml. Without
+# it they fail with a bare "service not running", so check first and say why.
+#
 # Two jails ban independently — `telix` for 2h, `recidive` for a week when an
 # IP has been banned repeatedly — so unbanning one jail is not enough to let
 # someone back in. `fail2ban-client unban <IP>` clears every jail at once, which
 # is why these targets never name a jail.
+F2B_RUNNING = @docker ps --format '{{.Names}}' | grep -qx telix-fail2ban || { \
+	  echo "fail2ban is not running (it is behind the 'fail2ban' compose profile)."; \
+	  echo "Start it with: docker compose --profile fail2ban up -d"; exit 1; }
+
 bans:
+	$(F2B_RUNNING)
 	@for jail in telix recidive; do \
 	  echo "[$$jail]"; \
 	  docker compose exec -T fail2ban fail2ban-client status $$jail \
@@ -75,9 +89,11 @@ bans:
 
 unban:
 	@test -n "$(IP)" || { echo "usage: make unban IP=203.0.113.9"; exit 1; }
+	$(F2B_RUNNING)
 	docker compose exec -T fail2ban fail2ban-client unban $(IP)
 
 unban-all:
+	$(F2B_RUNNING)
 	docker compose exec -T fail2ban fail2ban-client unban --all
 
 web-install:

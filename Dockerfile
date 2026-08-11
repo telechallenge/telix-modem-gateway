@@ -13,8 +13,18 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Stamp the build. Without this the container reports version "1.0.0" — the
+# source default — in the banner, in ATI and in the Grafana Version panel, so
+# there is no way to tell a freshly deployed gateway from a stale one. That is
+# not cosmetic: diagnosing a BBS-specific transfer fault means changing gateway
+# behaviour and re-testing, and a silently stale container makes every result a
+# lie. Defaults to "dev" so a plain `docker build` still works.
+ARG VERSION=dev
+
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o telix ./cmd/telix
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
+    -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+    -o telix ./cmd/telix
 
 # Runtime stage
 FROM alpine:3.21

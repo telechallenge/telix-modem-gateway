@@ -1,9 +1,11 @@
 package config
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -16,7 +18,92 @@ type Config struct {
 	RateLimit RateLimitConfig  `yaml:"rate_limit"`
 	Dialer    DialerConfig     `yaml:"dialer"`
 	Metrics   MetricsConfig    `yaml:"metrics"`
+	Probe     ProbeConfig      `yaml:"probe"`
+	Reload    ReloadConfig     `yaml:"reload"`
 	Version   string           `yaml:"-"` // Set at runtime, not from YAML
+
+	// sourceHash is the digest of the bytes this config was parsed from. The
+	// watcher seeds itself from it rather than re-reading the file, so the
+	// baseline is exactly the content now running — re-reading would leave a
+	// window in which an edit landing between load and watch start is adopted
+	// as the baseline and therefore never applied.
+	sourceHash [sha256.Size]byte
+}
+
+// SourceHash returns the digest of the file this config was loaded from.
+func (c *Config) SourceHash() [sha256.Size]byte {
+	return c.sourceHash
+}
+
+// MinProbeInterval is the floor under probe.interval. Several phonebook hosts
+// belong to other people, and a probe is a connection on their board however
+// briefly it lasts; a sub-10s interval is abuse rather than monitoring. Same
+// reasoning as S12's minimum guard time — the setting is clamped, not obeyed.
+const MinProbeInterval = 10 * time.Second
+
+// ProbeConfig controls the periodic reachability check over the phonebook. It
+// answers the one question the dial counters cannot: is the board accepting
+// connections *now*, whether or not anybody has called it.
+//
+// There is no default-on: enabling this makes the gateway open a TCP connection
+// to every non-busy phonebook host on a timer, several of which are run by
+// other people, so an upgrade must not start doing it unasked. An absent
+// section leaves probing off, the same contract the metrics section has.
+type ProbeConfig struct {
+	Enabled  bool `yaml:"enabled"`
+	Interval int  `yaml:"interval"` // seconds between cycles; default 60, floor 10
+	Timeout  int  `yaml:"timeout"`  // seconds to wait for a connection; default 5
+}
+
+// GetInterval returns the gap between probe cycles, defaulted and clamped to
+// MinProbeInterval.
+func (p *ProbeConfig) GetInterval() time.Duration {
+	if p.Interval <= 0 {
+		return 60 * time.Second
+	}
+	if d := time.Duration(p.Interval) * time.Second; d > MinProbeInterval {
+		return d
+	}
+	return MinProbeInterval
+}
+
+// GetTimeout returns how long one probe waits for a connection.
+func (p *ProbeConfig) GetTimeout() time.Duration {
+	if p.Timeout <= 0 {
+		return 5 * time.Second
+	}
+	return time.Duration(p.Timeout) * time.Second
+}
+
+// MinReloadInterval floors reload.interval. The poll costs one read and one
+// hash of a small file, so a tighter setting buys nothing an operator can
+// perceive while adding wakeups for the life of the process. Clamped, not
+// obeyed — the same contract probe.interval has.
+const MinReloadInterval = time.Second
+
+// ReloadConfig controls watching the config file for edits. Unlike probe, this
+// defaults to ON: it reads one local file the operator already controls and has
+// no effect anybody else can observe, so there is nothing for an upgrade to
+// start doing unasked.
+//
+// A change is adopted only if it parses AND validates; a file caught mid-write
+// fails one of those and is retried on the next poll, so the running gateway is
+// never taken down by a half-saved edit.
+type ReloadConfig struct {
+	Enabled  bool `yaml:"enabled"`
+	Interval int  `yaml:"interval"` // seconds between polls; default 2, floor 1
+}
+
+// GetInterval returns the gap between polls, defaulted and clamped to
+// MinReloadInterval.
+func (r *ReloadConfig) GetInterval() time.Duration {
+	if r.Interval <= 0 {
+		return 2 * time.Second
+	}
+	if d := time.Duration(r.Interval) * time.Second; d > MinReloadInterval {
+		return d
+	}
+	return MinReloadInterval
 }
 
 // MetricsConfig controls the Prometheus endpoint. It listens separately from
@@ -60,6 +147,19 @@ type ServerConfig struct {
 	// random per session. Empty, missing or artless falls back to the built-in
 	// banner, so the gateway runs unchanged without it.
 	BannerDir string `yaml:"banner_dir"`
+	// TrustedProxies are CIDRs whose peers are reverse proxies rather than
+	// callers — the web terminal's container address, in practice. They are
+	// exempt from max_per_ip and from rate_limit, both of which are per-IP and
+	// therefore meaningless against one address carrying a whole population of
+	// browser users. Global ceilings (max_connections) still apply. Empty by
+	// default: nothing is trusted unless it is named here.
+	TrustedProxies       []string `yaml:"trusted_proxies"`
+	parsedTrustedProxies []*net.IPNet
+}
+
+// ParsedTrustedProxies returns the parsed trusted_proxies CIDRs.
+func (s *ServerConfig) ParsedTrustedProxies() []*net.IPNet {
+	return s.parsedTrustedProxies
 }
 
 type LoggingConfig struct {
@@ -90,9 +190,29 @@ type PhonebookEntry struct {
 	// Busy marks a line that is always engaged: dialling it reports BUSY and
 	// no outbound call is ever placed, so host and port go unused and are not
 	// required.
-	Busy             bool             `yaml:"busy,omitempty"`
+	Busy bool `yaml:"busy,omitempty"`
+	// Telnet decides whether 0xFF sent to this board is doubled per RFC 854.
+	// "auto" (the default) infers it from whether the board answers negotiation,
+	// which is right for anything modern. A board that eats IAC without ever
+	// negotiating — a 1990s DOS BBS behind a telnet front end, typically —
+	// needs "yes": undoubled, its front end swallows every 0xFF along with the
+	// byte behind it, and since ZMODEM cannot escape 0xFF in-band (ZDLE covers
+	// only 0x00-0x1F and 0x80-0x9F) that corrupts every binary upload while
+	// plain-ASCII ones sail through. "no" forces it off for a genuinely raw
+	// TCP peer that the inference somehow misreads.
+	Telnet           string           `yaml:"telnet,omitempty"`        // auto (default) | yes | no
 	RequiredInit     string           `yaml:"required_init,omitempty"` // deprecated, use required_settings.init
 	RequiredSettings RequiredSettings `yaml:"required_settings,omitempty"`
+}
+
+// TelnetMode reports the entry's IAC-doubling policy, normalised and defaulted.
+func (e PhonebookEntry) TelnetMode() string {
+	switch strings.ToLower(strings.TrimSpace(e.Telnet)) {
+	case "yes", "no":
+		return strings.ToLower(strings.TrimSpace(e.Telnet))
+	default:
+		return "auto"
+	}
 }
 
 type RateLimitConfig struct {
@@ -133,11 +253,17 @@ func Load(path string) (*Config, error) {
 			WindowSeconds: 60,
 			BlockDuration: 300,
 		},
+		Reload: ReloadConfig{
+			Enabled:  true,
+			Interval: 2,
+		},
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
+
+	cfg.sourceHash = sha256.Sum256(data)
 
 	// Backward compat: migrate required_init → required_settings.init
 	for i := range cfg.Phonebook {
@@ -163,6 +289,17 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("dialer.allowed_networks: invalid CIDR %q: %w", cidr, err)
 		}
 		cfg.Dialer.parsedNetworks = append(cfg.Dialer.parsedNetworks, ipNet)
+	}
+
+	// Parse server.trusted_proxies CIDRs. A typo here would silently reinstate
+	// the per-IP limits on the web proxy — the exact failure this setting
+	// exists to remove — so it is a startup error, never a skipped entry.
+	for _, cidr := range cfg.Server.TrustedProxies {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("server.trusted_proxies: invalid CIDR %q: %w", cidr, err)
+		}
+		cfg.Server.parsedTrustedProxies = append(cfg.Server.parsedTrustedProxies, ipNet)
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -196,6 +333,12 @@ func (c *Config) validate() error {
 			if entry.Port < 1 || entry.Port > 65535 {
 				return fmt.Errorf("phonebook[%d]: port must be 1-65535, got %d", i, entry.Port)
 			}
+		}
+		// Reject a typo rather than silently defaulting it to auto: an operator
+		// who wrote `telnet: ture` would otherwise get the inference back with no
+		// sign it had been ignored, which is the failure this setting exists for.
+		if t := strings.ToLower(strings.TrimSpace(entry.Telnet)); t != "" && t != "auto" && t != "yes" && t != "no" {
+			return fmt.Errorf("phonebook[%d]: telnet must be auto, yes or no, got %q", i, entry.Telnet)
 		}
 		if entry.RequiredSettings.Baud != 0 && !ValidBaudRates[entry.RequiredSettings.Baud] {
 			return fmt.Errorf("phonebook[%d]: invalid required baud rate %d", i, entry.RequiredSettings.Baud)

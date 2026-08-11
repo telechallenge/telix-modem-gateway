@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"telix/internal/config"
@@ -16,7 +17,12 @@ import (
 
 // Server is the main telnet server
 type Server struct {
-	config        *config.Config
+	// config is swapped wholesale by Reload rather than mutated, which is what
+	// keeps the session hot path lock-free and free of torn reads: a session
+	// captures the pointer once at NewSession and keeps dialling the phonebook
+	// it connected under, while the next caller gets the edited one. A call in
+	// progress is never re-pointed underneath itself.
+	config        atomic.Pointer[config.Config]
 	logger        *logging.Logger
 	metrics       *metrics.Metrics // nil when metrics are disabled; all calls are no-ops
 	listener      net.Listener
@@ -37,30 +43,105 @@ func New(cfg *config.Config, logger *logging.Logger) *Server {
 
 // NewWithMetrics creates a server that reports to m. A nil m disables metrics.
 func NewWithMetrics(cfg *config.Config, logger *logging.Logger, m *metrics.Metrics) *Server {
-	return &Server{
-		config:  cfg,
-		logger:  logger,
-		metrics: m,
-		rateLimiter: NewRateLimiter(
-			cfg.RateLimit.Enabled,
-			cfg.RateLimit.MaxAttempts,
-			cfg.RateLimit.GetWindow(),
-			cfg.RateLimit.GetBlockDuration(),
-		),
-		connTracker: NewConnectionTracker(
-			cfg.Server.MaxConnections,
-			cfg.Server.MaxPerIP,
-		),
+	rateLimiter := NewRateLimiter(
+		cfg.RateLimit.Enabled,
+		cfg.RateLimit.MaxAttempts,
+		cfg.RateLimit.GetWindow(),
+		cfg.RateLimit.GetBlockDuration(),
+	)
+	connTracker := NewConnectionTracker(
+		cfg.Server.MaxConnections,
+		cfg.Server.MaxPerIP,
+	)
+
+	// Both per-IP limits share one exemption list, because they share the
+	// defect it corrects: a reverse proxy is a single peer standing in for many
+	// callers, so anything keyed on its address is a shared bucket. Applied
+	// here rather than at each check in handleConnection so a later edit cannot
+	// wire up one and miss the other.
+	trusted := cfg.Server.ParsedTrustedProxies()
+	rateLimiter.SetTrustedProxies(trusted)
+	connTracker.SetTrustedProxies(trusted)
+
+	s := &Server{
+		logger:        logger,
+		metrics:       m,
+		rateLimiter:   rateLimiter,
+		connTracker:   connTracker,
 		acceptLimiter: rate.NewLimiter(rate.Limit(50), 20), // 50 accepts/sec, burst of 20
 		bannerArt:     newBannerArt(cfg.Server.BannerDir),
 		sessions:      make(map[net.Conn]*Session),
 		done:          make(chan struct{}),
 	}
+	s.config.Store(cfg)
+	return s
+}
+
+// Config returns the configuration new callers will be served. Existing
+// sessions hold their own pointer and are unaffected by a later reload.
+func (s *Server) Config() *config.Config {
+	return s.config.Load()
+}
+
+// Reload swaps in an edited configuration and returns the names of any settings
+// that changed but could not be applied to the running process.
+//
+// Returning them rather than logging here is deliberate: the caller already
+// owns the reload log line, and a setting that was silently ignored is the
+// worst outcome of a hot reload — the operator edits a value, sees a success
+// message, and never learns the gateway is still running the old one.
+func (s *Server) Reload(cfg *config.Config) []string {
+	old := s.config.Load()
+
+	// The listener is already bound, so a port change cannot take effect
+	// without dropping every caller — which is exactly what a hot reload
+	// exists to avoid. Report it and keep serving the port we are on.
+	var ignored []string
+	if old.Server.Port != cfg.Server.Port {
+		ignored = append(ignored, "server.port")
+	}
+	if old.Logging.File != cfg.Logging.File {
+		ignored = append(ignored, "logging.file")
+	}
+	if old.Logging.Format != cfg.Logging.Format {
+		// Switching mid-stream would leave one log file holding two formats,
+		// which breaks any parser pointed at it.
+		ignored = append(ignored, "logging.format")
+	}
+	if old.Metrics.Enabled != cfg.Metrics.Enabled || old.Metrics.GetPort() != cfg.Metrics.GetPort() || old.Metrics.Bind != cfg.Metrics.Bind {
+		ignored = append(ignored, "metrics")
+	}
+
+	// Version is set at runtime from the build stamp, never from YAML, so it
+	// has to be carried across or ATI and the banner would report "" after the
+	// first reload.
+	cfg.Version = old.Version
+
+	// Push the values the limiters copied at construction. They are set before
+	// the pointer swap so a caller arriving mid-reload meets the new ceilings
+	// with the new phonebook, never a mix of new phonebook and old ceilings.
+	trusted := cfg.Server.ParsedTrustedProxies()
+	s.rateLimiter.SetLimits(
+		cfg.RateLimit.Enabled,
+		cfg.RateLimit.MaxAttempts,
+		cfg.RateLimit.GetWindow(),
+		cfg.RateLimit.GetBlockDuration(),
+	)
+	s.rateLimiter.SetTrustedProxies(trusted)
+	s.connTracker.SetLimits(cfg.Server.MaxConnections, cfg.Server.MaxPerIP)
+	s.connTracker.SetTrustedProxies(trusted)
+	s.bannerArt.SetDir(cfg.Server.BannerDir)
+
+	s.logger.SetLevel(cfg.Logging.Level)
+
+	s.config.Store(cfg)
+	return ignored
 }
 
 // Start starts the server
 func (s *Server) Start() error {
-	addr := fmt.Sprintf(":%d", s.config.Server.Port)
+	port := s.Config().Server.Port
+	addr := fmt.Sprintf(":%d", port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -69,7 +150,7 @@ func (s *Server) Start() error {
 
 	s.logger.Info().
 		Str("event", "server_started").
-		Int("port", s.config.Server.Port).
+		Int("port", port).
 		Msg("")
 
 	go s.acceptLoop()
@@ -163,8 +244,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Create session
-	sess := NewSession(conn, s.config, s.logger, s.bannerArt)
+	// Create session. The config pointer is read once here and held for the
+	// call's lifetime, so an edit landing mid-call cannot change the phonebook
+	// under a caller who is already connected to a board.
+	sess := NewSession(conn, s.Config(), s.logger, s.bannerArt)
 	sess.metrics = s.metrics
 	sess.logger.NewConnection()
 

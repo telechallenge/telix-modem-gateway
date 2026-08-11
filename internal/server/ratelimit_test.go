@@ -2,9 +2,73 @@ package server
 
 import (
 	"fmt"
+	"net"
 	"testing"
 	"time"
 )
+
+// mustCIDR is a test helper: the trusted-proxy set is []*net.IPNet everywhere,
+// and spelling out the error handling at every call site buries the intent.
+func mustCIDR(t *testing.T, s string) *net.IPNet {
+	t.Helper()
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		t.Fatalf("bad test CIDR %q: %v", s, err)
+	}
+	return n
+}
+
+// A reverse proxy is one TCP peer standing in for a whole population of
+// callers, so per-IP limits applied to it are really shared buckets: they
+// throttle every browser user together and can never identify one. The web
+// terminal reaches the gateway as the telix-web container address, which is
+// what made max_per_ip a site-wide cap on concurrent users. Direct callers must
+// keep both limits — port 2323 faces the internet and takes real scanners.
+func TestConnectionTracker_TrustedProxyExemptFromPerIPCapButNotTotal(t *testing.T) {
+	proxy := mustCIDR(t, "172.18.0.0/16")
+
+	ct := NewConnectionTracker(10, 2)
+	ct.SetTrustedProxies([]*net.IPNet{proxy})
+
+	for i := 0; i < 10; i++ {
+		if !ct.Add("172.18.0.6") {
+			t.Fatalf("trusted proxy rejected at connection %d: max_per_ip must not apply to it", i+1)
+		}
+	}
+	if ct.Add("172.18.0.6") {
+		t.Fatal("trusted proxy allowed past max_connections: the global ceiling must still hold")
+	}
+
+	direct := NewConnectionTracker(10, 2)
+	direct.SetTrustedProxies([]*net.IPNet{proxy})
+	if !direct.Add("203.0.113.9") || !direct.Add("203.0.113.9") {
+		t.Fatal("direct caller rejected below max_per_ip")
+	}
+	if direct.Add("203.0.113.9") {
+		t.Fatal("direct caller allowed past max_per_ip: exemption must not leak to untrusted peers")
+	}
+}
+
+func TestRateLimiter_TrustedProxyNotRateLimitedButDirectCallerIs(t *testing.T) {
+	proxy := mustCIDR(t, "172.18.0.0/16")
+
+	rl := NewRateLimiter(true, 2, time.Minute, time.Minute)
+	rl.SetTrustedProxies([]*net.IPNet{proxy})
+	defer rl.Stop()
+
+	for i := 0; i < 20; i++ {
+		if !rl.Allow("172.18.0.6") {
+			t.Fatalf("trusted proxy rate-limited at attempt %d", i+1)
+		}
+	}
+
+	if !rl.Allow("203.0.113.9") || !rl.Allow("203.0.113.9") {
+		t.Fatal("direct caller blocked below maxAttempts")
+	}
+	if rl.Allow("203.0.113.9") {
+		t.Fatal("direct caller not blocked past maxAttempts: exemption must not leak to untrusted peers")
+	}
+}
 
 // ---------------------------------------------------------------------------
 // RateLimiter tests

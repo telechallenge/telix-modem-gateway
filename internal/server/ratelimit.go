@@ -1,11 +1,47 @@
 package server
 
 import (
+	"net"
 	"sync"
 	"time"
 )
 
 const maxTrackedIPs = 10000
+
+// trustedNets are peer addresses that are not callers in their own right but
+// reverse proxies standing in for many — the web terminal's telix-web
+// container, in practice.
+//
+// Per-IP limiting is meaningless against such a peer and actively harmful: one
+// address carries the whole browser population, so a per-IP ceiling becomes a
+// site-wide one (max_per_ip: 5 capped the web terminal at five concurrent users
+// in total) and a per-IP rate limit becomes a shared bucket that any six users
+// in a minute can trip for everyone. Neither can ever identify an individual
+// abuser, which is the only thing a per-IP limit is for.
+//
+// This does NOT make the exempted peer unlimited — the global ceilings still
+// apply. The per-caller job on that path belongs to the layer that still knows
+// who the caller is: MAX_WS_PER_IP in web/server.js, which reads the address
+// nginx puts in X-Real-IP.
+type trustedNets []*net.IPNet
+
+// has reports whether ip is inside the trusted set. An unparseable address is
+// never trusted, so a malformed peer fails closed into the normal limits.
+func (t trustedNets) has(ip string) bool {
+	if len(t) == 0 {
+		return false
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, n := range t {
+		if n != nil && n.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
 
 // RateLimiter implements per-IP rate limiting
 type RateLimiter struct {
@@ -20,6 +56,7 @@ type RateLimiter struct {
 	blocked      map[string]time.Time
 	globalCount  int       // total allows in the current window
 	globalWindow time.Time // start of the current global window
+	trusted      trustedNets
 	done         chan struct{}
 }
 
@@ -51,6 +88,28 @@ func (r *RateLimiter) Stop() {
 	close(r.done)
 }
 
+// SetLimits updates the thresholds on a running limiter, so a config reload
+// does not have to rebuild it and lose the in-flight attempt and block state
+// with it — an operator raising a limit should not thereby forgive whoever is
+// currently blocked.
+func (r *RateLimiter) SetLimits(enabled bool, maxAttempts int, window, blockDuration time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.enabled = enabled
+	r.maxAttempts = maxAttempts
+	r.window = window
+	r.blockDuration = blockDuration
+}
+
+// SetTrustedProxies exempts these networks from per-IP rate limiting. Set at
+// startup and on reload — it is deliberately not a constructor argument, so
+// that adding it churned no existing call site.
+func (r *RateLimiter) SetTrustedProxies(nets []*net.IPNet) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.trusted = nets
+}
+
 // Allow checks if an IP is allowed to make a connection attempt
 func (r *RateLimiter) Allow(ip string) bool {
 	if !r.enabled {
@@ -69,6 +128,15 @@ func (r *RateLimiter) Allow(ip string) bool {
 	}
 	if r.globalCount >= globalMaxRate {
 		return false
+	}
+
+	// A trusted proxy skips the per-IP machinery below but is still counted
+	// toward the global window above — it is exempt from being singled out as a
+	// caller, not exempt from the ceiling that protects the gateway as a whole.
+	// Deliberately placed after the global check for that reason.
+	if r.trusted.has(ip) {
+		r.globalCount++
+		return true
 	}
 
 	// Check if blocked
@@ -198,6 +266,7 @@ type ConnectionTracker struct {
 	maxPerIP int
 	conns    map[string]int
 	total    int
+	trusted  trustedNets
 }
 
 // NewConnectionTracker creates a new connection tracker
@@ -209,6 +278,25 @@ func NewConnectionTracker(maxTotal, maxPerIP int) *ConnectionTracker {
 	}
 }
 
+// SetLimits updates the ceilings on a running tracker. Connections already
+// counted are left alone: lowering max_connections below the current count
+// stops new callers rather than dropping the ones on the line, which is the
+// only behaviour consistent with a reload that is not supposed to be felt.
+func (c *ConnectionTracker) SetLimits(maxTotal, maxPerIP int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.maxTotal = maxTotal
+	c.maxPerIP = maxPerIP
+}
+
+// SetTrustedProxies exempts these networks from the per-IP connection cap.
+// Set at startup and on reload.
+func (c *ConnectionTracker) SetTrustedProxies(nets []*net.IPNet) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.trusted = nets
+}
+
 // Add attempts to add a connection, returns false if limits exceeded
 func (c *ConnectionTracker) Add(ip string) bool {
 	c.mu.Lock()
@@ -218,7 +306,9 @@ func (c *ConnectionTracker) Add(ip string) bool {
 		return false
 	}
 
-	if c.conns[ip] >= c.maxPerIP {
+	// maxTotal above still binds a trusted proxy; only the per-IP ceiling is
+	// skipped, because that address is a whole population rather than a caller.
+	if c.conns[ip] >= c.maxPerIP && !c.trusted.has(ip) {
 		return false
 	}
 

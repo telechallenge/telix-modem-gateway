@@ -36,6 +36,19 @@
         <div class="crt-mask"></div>
         <div class="crt-scanlines"></div>
         <div class="crt-glass"></div>
+        <!--
+          Shown only when the link to the gateway has dropped. Last in the
+          screen so it paints over the CRT filter stack rather than under it,
+          and absolutely positioned so it takes no part in the layout the fit
+          loop measures.
+        -->
+        <div class="crt-reboot" id="crtReboot" hidden>
+          <p class="crt-reboot-msg">NO CARRIER &mdash; LINK TO GATEWAY LOST</p>
+          <button type="button" class="crt-reboot-btn" id="crtRebootBtn">
+            <span class="crt-reboot-cap"></span>
+            <span class="crt-reboot-label">RESET</span>
+          </button>
+        </div>
       </div>
       <div class="crt-chin">
         <span class="crt-brand">

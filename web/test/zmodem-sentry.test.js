@@ -164,7 +164,7 @@ function liveBridge() {
   g.window.ZmodemUI = {
     startXfer() {}, updateXfer() {}, endXfer() {},
     surfaceError() {}, surfaceDownload() {},
-    promptUpload: () => Promise.resolve([]),
+    promptUpload: () => Promise.resolve({ files: [] }),
   };
   const sent = [];
   const bridge = g.window.ZmodemSentry.createZmodemBridge({

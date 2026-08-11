@@ -14,6 +14,15 @@ const TELIX_PORT = parseInt(process.env.TELIX_PORT || '2323', 10);
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES || String(1024 * 1024 * 1024), 10);
 const ZMODEM_TIMEOUT_SEC = parseInt(process.env.ZMODEM_TIMEOUT_SEC || '30', 10);
+// Outbound ZMODEM data subpacket size. 'auto' reads it off the receiver's
+// ZRINIT (see chooseBlockSize in public/js/zmodem-sentry.js): 1024 for a
+// receiver that advertises a window, 8192 — "ZMODEM-8k", what ENiGMA½'s
+// sexyz/lrzsz receivers expect — for one that streams. Only those two sizes are
+// meaningful, so anything else falls back to 'auto' rather than putting an
+// arbitrary number on the wire.
+const ZMODEM_BLOCK_SIZE = [1024, 8192].includes(parseInt(process.env.ZMODEM_BLOCK_SIZE, 10))
+  ? parseInt(process.env.ZMODEM_BLOCK_SIZE, 10)
+  : 0; // 0 = auto
 
 // --- Telnet protocol constants (only what's needed for NAWS generation) ---
 const IAC  = 255;
@@ -41,11 +50,29 @@ function escapeIAC(buf) {
 const MAX_WS_PER_IP = parseInt(process.env.MAX_WS_PER_IP || '5', 10);
 const ipConnections = new Map(); // ip -> count
 
+// The client identity behind nginx, used for MAX_WS_PER_IP and for the
+// connection log.
+//
+// X-Real-IP first, and that ordering is the whole point. nginx *sets*
+// X-Real-IP from $remote_addr (post-real_ip, so the CF-Connecting-IP that
+// Cloudflare vouched for), overwriting any copy the caller sent — whereas
+// X-Forwarded-For is $proxy_add_x_forwarded_for, which *appends* to the
+// caller's own header. So the first XFF entry is chosen by the caller: reading
+// it handed every forged value its own fresh MAX_WS_PER_IP budget, which is no
+// limit at all. When falling back to XFF, take the last entry — the hop
+// appended by the proxy nearest us, not the oldest claim in the chain.
+//
+// This leans on telix-web being unreachable except from nginx (it publishes no
+// host port and sits on telix-net); exposing it directly would make both
+// headers caller-controlled again.
 function getClientIP(req) {
-  // Trust X-Forwarded-For only from reverse proxies
+  const realIP = req.headers['x-real-ip'];
+  if (realIP) return realIP.trim();
+
   const forwarded = req.headers['x-forwarded-for'];
   if (forwarded) {
-    return forwarded.split(',')[0].trim();
+    const hops = forwarded.split(',');
+    return hops[hops.length - 1].trim();
   }
   return req.socket.remoteAddress || 'unknown';
 }
@@ -162,6 +189,7 @@ app.get('/config.json', (req, res) => {
   res.json({
     maxUploadBytes: MAX_UPLOAD_BYTES,
     zmodemTimeoutSec: ZMODEM_TIMEOUT_SEC,
+    zmodemBlockSize: ZMODEM_BLOCK_SIZE,
   });
 });
 
@@ -224,8 +252,18 @@ wss.on('connection', (ws, req) => {
       tcp.write(naws); // NAWS is proxy-constructed and correctly formed; do not re-escape.
     } else {
       const out = escapeIAC(Buffer.isBuffer(data) ? data : Buffer.from(data));
-      tcp.write(out);
       metrics.bytesToGateway(out.length);
+      // Backpressure. net.Socket#write buffers in the heap and returns false
+      // when it is over its high-water mark; ignoring that meant a ZMODEM upload
+      // simply relocated from the browser's socket buffer into this process,
+      // which is no better — the browser sees its own buffer drain, believes the
+      // file has landed and starts its idle timer while the bytes are still
+      // sitting here. Stop reading the WebSocket until the gateway has taken
+      // what we already have, so the backlog stays where TCP can signal it.
+      if (!tcp.write(out)) {
+        ws.pause();
+        tcp.once('drain', () => ws.resume());
+      }
     }
   });
 

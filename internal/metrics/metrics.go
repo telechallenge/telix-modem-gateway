@@ -12,6 +12,7 @@ package metrics
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -62,6 +63,12 @@ type Metrics struct {
 	dialDuration  prometheus.Histogram
 
 	bytesTotal *prometheus.CounterVec
+
+	bbsReachable *prometheus.GaugeVec
+	bbsProbeDur  *prometheus.GaugeVec
+	bbsProbeTime *prometheus.GaugeVec
+
+	phonebookEntry *prometheus.GaugeVec
 }
 
 // New builds a Metrics with its own registry, pre-registered with the Go
@@ -116,6 +123,36 @@ func New() *Metrics {
 			Name: "telix_bytes_total",
 			Help: "Bytes bridged in data mode, by direction.",
 		}, []string{"direction"}),
+
+		// Reachability of the phonebook's boards, from the gateway's periodic
+		// TCP probe (internal/probe). Labels come from the phonebook and so are
+		// bounded by config — `entry` is the board's name, never a dialled
+		// number, for the same reason telix_dials_total is.
+		bbsReachable: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "telix_bbs_reachable",
+			Help: "1 if the phonebook entry's host:port accepted a TCP connection at the last probe, 0 if not.",
+		}, []string{"entry", "address"}),
+		bbsProbeDur: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "telix_bbs_probe_duration_seconds",
+			Help: "How long the last probe took, whether it succeeded or failed. A slow failure is a timeout; a fast one is a refusal.",
+		}, []string{"entry", "address"}),
+		// A reachability gauge on its own is a trap: if the prober dies the last
+		// verdict sits there reading UP forever. This is how a stale one is
+		// told from a live one — alert on age, not just on value.
+		bbsProbeTime: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "telix_bbs_last_probe_timestamp_seconds",
+			Help: "Unix time of the last probe of this entry. Stops advancing if the prober stops, which the reachable gauge alone cannot show.",
+		}, []string{"entry", "address"}),
+
+		// The phonebook as configured, one series per line. The bbs* gauges
+		// above only cover lines the prober dials, so a phonebook of
+		// always-busy decoys leaves the dashboard reporting fewer boards than
+		// the phone list holds — with nothing to say the difference is by
+		// design rather than a probe that stopped. This is the denominator.
+		phonebookEntry: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "telix_phonebook_entry",
+			Help: "1 for each configured phonebook line. Always 1; the labels carry the value. busy=\"true\" lines are never dialled and so have no telix_bbs_reachable series.",
+		}, []string{"entry", "address", "busy"}),
 	}
 
 	m.registry.MustRegister(
@@ -130,6 +167,10 @@ func New() *Metrics {
 		m.dialsTotal,
 		m.dialDuration,
 		m.bytesTotal,
+		m.bbsReachable,
+		m.bbsProbeDur,
+		m.bbsProbeTime,
+		m.phonebookEntry,
 	)
 
 	// Pre-create the rejection series so a gateway that has never refused a
@@ -142,6 +183,11 @@ func New() *Metrics {
 	for _, dir := range []string{DirectionToRemote, DirectionToClient} {
 		m.bytesTotal.WithLabelValues(dir)
 	}
+	// The bbs* series are deliberately NOT pre-created. Zero means "would not
+	// accept a connection", so seeding them would announce every board down for
+	// the second or two before the first probe cycle answers — a false alarm on
+	// every restart, which is worse than a panel that says "No data" until the
+	// first verdict lands.
 
 	return m
 }
@@ -210,6 +256,65 @@ func (m *Metrics) DialCompleted(entry, outcome string, d time.Duration) {
 	m.dialsInFlight.Dec()
 	m.dialsTotal.WithLabelValues(entry, outcome).Inc()
 	m.dialDuration.Observe(d.Seconds())
+}
+
+// BBSProbed records one reachability probe. entry is the phonebook entry name
+// and address its host:port — both come from config, so neither can be widened
+// by a caller. d is how long the attempt took, recorded either way.
+func (m *Metrics) BBSProbed(entry, address string, reachable bool, d time.Duration) {
+	if m == nil {
+		return
+	}
+	up := 0.0
+	if reachable {
+		up = 1
+	}
+	m.bbsReachable.WithLabelValues(entry, address).Set(up)
+	m.bbsProbeDur.WithLabelValues(entry, address).Set(d.Seconds())
+	m.bbsProbeTime.WithLabelValues(entry, address).SetToCurrentTime()
+}
+
+// ResetPhonebookSeries drops every series labelled by phonebook entry, so a
+// reload can republish the phone list from scratch.
+//
+// This is required, not tidiness. These are GaugeVecs keyed on entry and
+// address: a board deleted from the phonebook would otherwise keep publishing
+// the last value it ever had, so a removed line reads as configured forever and
+// — worse — a removed board keeps reporting telix_bbs_reachable 1, which is the
+// dashboard asserting a board is up when the gateway can no longer even dial
+// it. That is the same failure telix_bbs_last_probe_timestamp_seconds exists to
+// catch, arriving by a different route.
+//
+// The cost is a brief gap: reachability is deliberately not pre-created, so
+// those panels read "No data" until the next probe cycle answers, which is
+// seconds away because a reloaded prober runs its first cycle immediately. A
+// moment of "No data" is the honest state, and better than a stale UP.
+func (m *Metrics) ResetPhonebookSeries() {
+	if m == nil {
+		return
+	}
+	m.phonebookEntry.Reset()
+	m.bbsReachable.Reset()
+	m.bbsProbeDur.Reset()
+	m.bbsProbeTime.Reset()
+}
+
+// PhonebookLine publishes one configured phonebook line. Call it once per entry
+// at startup and again after each reload, having reset the series first.
+//
+// entry is the board's name and address its host:port, both straight from
+// config — the same bound on cardinality telix_dials_total relies on, and the
+// same reason neither is ever a dialled number. Both are optional in config:
+// a line with no name is labelled "unnamed", and a busy line is not required to
+// name a host at all, which is an empty address rather than an invented one.
+func (m *Metrics) PhonebookLine(entry, address string, busy bool) {
+	if m == nil {
+		return
+	}
+	if entry == "" {
+		entry = "unnamed"
+	}
+	m.phonebookEntry.WithLabelValues(entry, address, strconv.FormatBool(busy)).Set(1)
 }
 
 // BytesTransferred records bytes bridged in data mode. direction must be one of

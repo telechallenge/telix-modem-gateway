@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 // Largest .ANS the gateway will draw. Scene art runs to a few tens of KB; a
@@ -51,24 +52,49 @@ var errArtTooBig = errors.New("banner art exceeds the size cap")
 // path that already pays for a TCP handshake and sleeps 100ms waiting out
 // telnet negotiation, and accepts are rate-limited to 50/sec besides. Reading
 // the chosen file per session also keeps a large art pack off the heap.
+// The directory itself can also move, when banner_dir is edited and the config
+// is reloaded under a running gateway, so it is held atomically rather than as
+// a plain field: pick runs on a session goroutine while the reload runs on the
+// watcher's.
 type bannerArt struct {
-	dir string
+	dirPtr atomic.Pointer[string]
 }
 
 func newBannerArt(dir string) *bannerArt {
-	return &bannerArt{dir: strings.TrimSpace(dir)}
+	b := &bannerArt{}
+	b.SetDir(dir)
+	return b
+}
+
+// SetDir points the art at a different directory, for a config reload.
+func (b *bannerArt) SetDir(dir string) {
+	trimmed := strings.TrimSpace(dir)
+	b.dirPtr.Store(&trimmed)
+}
+
+// dir returns the directory currently configured.
+func (b *bannerArt) dir() string {
+	if d := b.dirPtr.Load(); d != nil {
+		return *d
+	}
+	return ""
 }
 
 // pick returns one random piece of art, ready to write to the client, or an
 // empty string when the directory is unset, unreadable, or holds nothing
 // drawable — in which case the caller falls back to the built-in banner.
 func (b *bannerArt) pick() string {
-	names := b.list()
+	// Read once and carry it through, so a reload landing between the listing
+	// and the read cannot make us look for one directory's filename in
+	// another's.
+	dir := b.dir()
+
+	names := b.list(dir)
 	if len(names) == 0 {
 		return ""
 	}
 
-	raw, err := b.read(names[rand.Intn(len(names))])
+	raw, err := b.read(dir, names[rand.Intn(len(names))])
 	if err != nil {
 		// Deleted between the listing and the read, unreadable, or oversized.
 		// One connection gets the built-in banner; nothing else is affected.
@@ -77,17 +103,17 @@ func (b *bannerArt) pick() string {
 	return renderArt(raw)
 }
 
-// list returns the drawable filenames currently in the directory.
-func (b *bannerArt) list() []string {
-	if b.dir == "" {
+// list returns the drawable filenames currently in dir.
+func (b *bannerArt) list(dir string) []string {
+	if dir == "" {
 		return nil
 	}
-	info, err := os.Stat(b.dir)
+	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
 		return nil
 	}
 
-	entries, err := os.ReadDir(b.dir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
@@ -105,8 +131,8 @@ func (b *bannerArt) list() []string {
 	return names
 }
 
-func (b *bannerArt) read(name string) ([]byte, error) {
-	f, err := os.Open(filepath.Join(b.dir, name))
+func (b *bannerArt) read(dir, name string) ([]byte, error) {
+	f, err := os.Open(filepath.Join(dir, name))
 	if err != nil {
 		return nil, err
 	}

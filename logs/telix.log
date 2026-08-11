@@ -57,3 +57,4 @@
 {"event":"disconnected","level":"info","session_id":"57ac8bc5","source_ip":"::1","timestamp":"2026-08-06T16:15:25Z"}
 {"event":"shutdown_signal","level":"info","signal":"terminated","timestamp":"2026-08-06T23:18:51Z"}
 {"event":"server_stopped","level":"info","timestamp":"2026-08-06T23:18:51Z"}
+{"event":"startup","level":"info","phonebook_entries":8,"timestamp":"2026-08-07T16:13:44Z","version":"0.1.0-63-gcd0f620-dirty"}

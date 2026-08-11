@@ -56,9 +56,12 @@ telnet localhost 2323
 #  BBS + Docker exporters)
 make docker-up
 
-# Or just the container
+# Or just the container. Mount the config's DIRECTORY, not the file — a
+# single-file bind mount pins the inode, so an editor that saves by
+# write-then-rename (vim, sed -i) leaves the container reading the old
+# content and live reload never sees the edit.
 make docker
-docker run -p 2323:2323 -v ./configs/telix.yaml:/etc/telix/telix.yaml:ro telix
+docker run -p 2323:2323 -v ./configs:/etc/telix/conf:ro telix -config /etc/telix/conf/telix.yaml
 ```
 
 ## Banner art
@@ -99,7 +102,28 @@ Running outside Docker (`make run`)? Point `banner_dir` at `./banners`.
 
 ## Bans
 
-fail2ban watches the gateway's log and blocks abusive IPs. Two jails ban
+> **fail2ban is currently disabled.** Both it and its exporter sit behind the
+> `fail2ban` compose profile, so `docker compose up -d` does not start them.
+> Bring them back with `docker compose --profile fail2ban up -d` and uncomment
+> the `telix-fail2ban` scrape job in `monitoring/prometheus/prometheus.yml`.
+>
+> Why: it could only ever ban callers who telnet the published port directly.
+> Everyone arriving through the web terminal reaches the gateway as the
+> `telix-web` container address, so the entire browser population shares one
+> identity — and the jail duly banned the proxy itself rather than any attacker.
+> `fail2ban/ignoreip.local` now makes every private range unbannable so that
+> specific self-harm cannot recur, but it does not give fail2ban a per-user
+> identity on the web path. Nothing here does; that needs the client address
+> carried across the last hop (PROXY protocol) plus an enforcement point that
+> web traffic actually crosses.
+>
+> Still in force with fail2ban off: the gateway's rate limiter and connection
+> tracker, `MAX_WS_PER_IP` in the web proxy, and Cloudflare in front of nginx.
+> Note the first two key on the same collapsed address — see the caveat at the
+> end of this section.
+
+The rest of this section describes fail2ban as configured, for when it is
+re-enabled. It watches the gateway's log and blocks abusive IPs. Two jails ban
 independently, which is the thing to know before you try to let someone back in:
 
 | Jail | Trigger | Ban |
@@ -132,7 +156,64 @@ rather than silently vanishing. The counts are always exact.
 > straight to the published port. Traffic arriving through the web terminal
 > crosses `FORWARD` instead and is not affected — and it all arrives from the
 > web proxy's container IP anyway, so a ban there would hit every browser user
-> at once. The gateway's own per-IP rate limiter is what covers that path.
+> at once. That is what `fail2ban/ignoreip.local` prevents.
+>
+> **The same collapse affected the gateway's own defences** — see the next
+> section, which is where it was fixed.
+
+## Per-IP limits and the web proxy
+
+`handleConnection` keys both the rate limiter and the connection tracker on
+`conn.RemoteAddr()`. For a direct telnet caller that is their real address; for
+every web-terminal user it is the `telix-web` container address, so both limits
+became shared buckets for the entire browser population:
+
+| Limit | Effect before | Effect now |
+|---|---|---|
+| `server.max_per_ip: 5` | whole web terminal capped at **5 concurrent users**; the 6th refused outright | proxy exempt via `trusted_proxies`; direct callers unchanged |
+| `rate_limit` (5 per 60s, 300s block) | the 6th browser connection in any minute blocked **everyone** for 5 minutes | disabled outright (`enabled: false`) |
+
+Two changes, and they are not the same kind:
+
+**`server.trusted_proxies`** names CIDRs whose peers are reverse proxies rather
+than callers. They skip the per-IP ceilings — which can never identify an
+individual through a proxy anyway — while `max_connections` still binds them.
+Direct callers keep both limits, which matters: port 2323 faces the internet and
+takes real scanners daily.
+
+It is set to the Docker bridge pool `172.16.0.0/12`, not to `telix-net`'s
+current `/16`, because compose renumbers these networks on recreate — observed
+here, `telix-net` moved from `172.18.0.0/16` to `172.19.0.0/16` and the proxy's
+address moved with it. A pinned `/16` survives until the next `docker compose
+down` and then silently reinstates the cap. Note `172.16.0.0/12` is the private
+block only (`172.16` – `172.31`); public `172.x` scanners such as Linode's
+`172.104.x` are outside it and stay limited. An invalid CIDR is a startup error,
+never a skipped entry.
+
+**`rate_limit.enabled: false`** is a blunter call, made because the limiter's
+value on the direct-telnet path did not justify keeping a mechanism whose
+misfire takes the web terminal down for five minutes at a time. Disabling it
+also switches off the global 1000-per-window cap it carries;
+`server.max_connections` (100) remains the global ceiling.
+
+Verified live after the change: 12 concurrent browser sessions — more than twice
+`max_per_ip` — all connected and received gateway data, with zero
+`rate_limited` or `connection_rejected` events.
+
+## Known gap: the web path has no per-user identity
+
+Everything above shares one root cause. Between the browser and the gateway the
+chain is Cloudflare → nginx → `telix-web` → `telix`, and the last hop is a plain
+TCP connection with nowhere to carry the caller's address. nginx already knows
+it (`real_ip_header CF-Connecting-IP`) and passes it to the web proxy as
+`X-Real-IP`, which is where `MAX_WS_PER_IP` reads it — but it stops there.
+
+So per-browser-user limiting lives entirely in the web proxy now, and the
+gateway deliberately does not attempt it. Until the address is carried across
+that last hop (PROXY protocol, parsed only from trusted peers — otherwise anyone
+who telnets the port forges an address and gets a third party banned), the
+gateway cannot tell one browser user from another, and any per-IP mechanism it
+runs there is a shared bucket.
 
 ## Monitoring
 
@@ -157,7 +238,8 @@ make vbox-exporter-install   # only if you want the VirtualBox dashboard
 
 ### Exposure
 
-Grafana and Prometheus publish **only** to the two addresses in `.env`:
+Grafana and Prometheus publish to the host **only** on the two addresses in
+`.env`:
 
 | Variable | Purpose |
 |----------|---------|
@@ -169,6 +251,11 @@ an unauthenticated Prometheus to the internet. Every other target — node_expor
 the BBS and Docker exporters, and both gateway `/metrics` endpoints — is
 reachable only from inside the compose network and is never published to the
 host.
+
+Grafana has one further path in: nginx proxies it publicly at
+`mon.pcpursuit.net` (see [Public hostnames](#public-hostnames)). **Prometheus
+does not** and should not — it has no authentication of any kind, so anything
+that reaches it can read every metric and query the TSDB.
 
 The one exception is the VirtualBox exporter, which has to run on the host (see
 below). It binds the Docker bridge address `172.17.0.1`, not `0.0.0.0`: every
@@ -195,6 +282,10 @@ listener off entirely.
 | `telix_dials_in_flight` | gauge | Dials currently being placed |
 | `telix_connections_rejected_total` | counter | `reason`: `rate_limited`, `limit_exceeded` |
 | `telix_bytes_total` | counter | `direction`: `to_remote`, `to_client`. Data mode only |
+| `telix_bbs_reachable` | gauge | 1/0 per phonebook entry from the periodic probe. Labelled `entry` and `address` |
+| `telix_bbs_probe_duration_seconds` | gauge | Last probe's connect time, recorded on failure too |
+| `telix_bbs_last_probe_timestamp_seconds` | gauge | When that verdict was taken — the only way to spot a stale one |
+| `telix_phonebook_entry` | gauge | Always 1, one series per configured line. Labelled `entry`, `address`, `busy`. Published at startup |
 | `telix_build_info` | gauge | Version in the label |
 | `go_*` / `process_*` | — | Go runtime and process collectors |
 
@@ -207,6 +298,54 @@ guess.
 The web client exposes `telixweb_*` on its existing port at `/metrics`:
 connections active/total, per-IP rejections, proxy errors, and bytes proxied
 each direction.
+
+### Are the boards answering?
+
+Every other signal here is second-hand: a board in a container reports healthy
+whether or not its listener works, and a board on somebody else's host is
+invisible until a caller dials it and gets `NO CARRIER`. So the gateway checks
+for itself — every `probe.interval` seconds it offers a TCP connection to each
+non-busy phonebook entry's `host:port` and publishes the verdict as
+`telix_bbs_reachable`. The **BBS reachability** row on the Telix dashboard plots
+it as a state timeline, one band per entry, alongside connect time and the age
+of each verdict.
+
+Three things this probe is careful about:
+
+- **It hangs up without negotiating telnet.** A BBS treats terminal-type
+  chatter as the start of a call and writes it to its caller log; a negotiating
+  probe would post a phantom call there every interval.
+- **It proves the line answers, nothing more.** A board that accepts sockets
+  while refusing logins still reads UP.
+- **`dialer.allowed_networks` binds it** exactly as it binds a real dial. The
+  one thing that contacts every phonebook host on a timer is not exempt from the
+  setting that exists to stop that.
+
+Watch the "Time since last probe" panel as well as the verdict:
+`telix_bbs_reachable` is a gauge, so if the prober stopped, its last value would
+sit there reading UP indefinitely. Age is what tells a live reading from a
+frozen one.
+
+Off by default — see [Reachability probing](#reachability-probing) to turn it on.
+
+#### Why the dashboard shows fewer boards than the phonebook holds
+
+The probe only covers lines a caller can actually reach, so **always-busy
+entries have no reachability series at all** — they report BUSY before any dial
+is placed, and config does not even require them to name a host. Add ten
+always-busy numbers and the reachability timeline does not change, which looks
+exactly like a probe that stopped.
+
+`telix_phonebook_entry` is the denominator that tells the two apart. It is
+published once at startup, one series per configured line carrying `busy`, and
+drives three panels in the same row: **Lines configured**, **Always busy (not
+probed)** and the **Phone list** table. `Lines configured` minus `Always busy`
+is what the reachability panels can ever cover.
+
+The table is republished on every config reload, so it is also the check for
+whether a config edit actually reached the gateway: an entry you added that is
+still missing here means the file the gateway is reading is not the one you
+edited — check the bind mount — rather than that the probe is broken.
 
 ### The BBS boards
 
@@ -319,6 +458,64 @@ which recreates the container.
 
 Configuration is a YAML file. See `configs/telix.yaml` for a complete example.
 
+### Live reload — editing config without a restart
+
+Edit `configs/telix.yaml` and save. The gateway picks the change up within a
+couple of seconds. Nothing to run, no signal to send, no container to restart —
+and **calls in progress are not dropped**: a session keeps the config it dialled
+under, so only the next caller sees the edit.
+
+```bash
+vim configs/telix.yaml     # add a board to the phonebook
+# ...within ~2s:
+# {"event":"config_reloaded","phonebook_entries":21,"path":"/etc/telix/conf/telix.yaml"}
+```
+
+Watch it land:
+
+```bash
+docker compose logs -f telix | grep config_
+```
+
+A change is applied only if it parses **and** validates. A broken or half-saved
+edit is logged and discarded, and the gateway carries on with the config it
+already has:
+
+```
+{"event":"config_reload_failed","error":"phonebook[7]: host is required"}
+```
+
+Four settings cannot be applied to a running process, because the thing they
+configure is already bound. Changing one is *reported* rather than silently
+ignored — the reload line names it under `needs_restart`, and applying it means
+`docker compose restart telix`:
+
+| Setting | Why |
+|---|---|
+| `server.port` | the telnet listener is already bound |
+| `metrics.*` | the exposition endpoint is already bound |
+| `logging.file` | the log writer is already open |
+| `logging.format` | switching mid-stream would mix two formats in one file |
+
+Everything else takes effect live: the phonebook, `logging.level` (so you can go
+to `debug` on a running gateway and back), `banner_dir`, `idle_timeout`,
+`max_connections`, `max_per_ip`, `trusted_proxies`, `rate_limit`,
+`dialer.allowed_networks` and the `probe` settings.
+
+Turn it off with `reload.enabled: false`; tune the poll with `reload.interval`
+(seconds, floor 1).
+
+> **The config's *directory* is what gets bind-mounted, not the file** —
+> `./configs:/etc/telix/conf:ro`. This is load-bearing. A single-file bind mount
+> pins the host inode, and vim and `sed -i` both save by writing a new file and
+> renaming it over the old one, so the container goes on reading the original
+> inode and never sees the edit. Measured: after an atomic save the host file
+> had two phonebook entries while the container still saw one, and no reload
+> fired. The mount must also be a *sibling* of `banners`, not its parent —
+> mounting `./configs` at `/etc/telix` makes that path read-only and Docker then
+> cannot create the `/etc/telix/banners` mountpoint inside it, so the container
+> fails to start at all.
+
 ### Server
 
 ```yaml
@@ -352,6 +549,30 @@ dialer:
 When `allowed_networks` is set, the gateway resolves phonebook hostnames and verifies all IPs fall within the allowed CIDRs before connecting. This prevents the gateway from being used to reach arbitrary hosts on the public internet. **Recommended for production deployments** where BBS hosts live on a private network.
 
 If `allowed_networks` is empty or omitted, all destinations are allowed.
+
+### Reachability probing
+
+```yaml
+probe:
+  enabled: true      # off when the section is absent
+  interval: 60       # seconds between cycles; floor of 10
+  timeout: 5         # seconds to wait for a connection
+```
+
+Periodically opens and immediately closes a TCP connection to every non-busy
+phonebook entry, publishing `telix_bbs_reachable`. See
+[Are the boards answering?](#are-the-boards-answering) for what the numbers mean
+and what they don't.
+
+**Off unless you ask for it.** Enabling this makes the gateway connect to every
+board in the phonebook on a timer, and some of those hosts belong to other
+people — not a thing an upgrade gets to start doing on its own. `interval` is
+clamped to a floor of 10 seconds for the same reason.
+
+Entries with `busy: true` are never probed: they place no outbound call, so
+their host isn't on any path a caller can take, and the phonebook doesn't
+require them to name one. Several numbers pointing at one board are probed once
+per cycle but each keeps its own series.
 
 ### Rate limiting
 
@@ -394,6 +615,43 @@ phonebook:
 ```
 
 If `allowed_networks` is set, make sure it covers the Docker bridge (`172.16.0.0/12`) — `127.0.0.0/8` will not match `host.docker.internal`.
+
+### `telnet` — IAC doubling for older boards
+
+RFC 854 says a literal `0xFF` sent to a telnet peer must be doubled. The gateway
+normally works out whether to do that by watching whether the board answers
+negotiation, which is right for anything modern.
+
+It can be wrong in **either direction** for an older board, and both failures
+look identical from the outside — every binary upload rejected at the very first
+data subpacket, every plain-ASCII one landing fine, because ASCII contains no
+`0xFF` to get mangled:
+
+| What the board does | Inference | What goes wrong | Fix |
+|---|---|---|---|
+| Eats IAC but never negotiates | `raw` → no doubling | The front end swallows each `0xFF` **and the byte behind it** | `telnet: yes` |
+| Negotiates, but its app reads the socket raw | `telnet` → doubling | The extra `0xFF` lands **inside the file**, breaking every subpacket's CRC | `telnet: no` |
+
+Since ZMODEM cannot escape `0xFF` in-band (ZDLE covers only `0x00–0x1F` and
+`0x80–0x9F`), the transport is the only lever there is — which is why this is a
+per-board setting rather than something the protocol can sort out.
+
+```yaml
+  - number: "916-555-9000"
+    host: "majorbbs.example.com"
+    port: 23
+    name: "MajorBBS"
+    telnet: yes        # auto (default) | yes | no
+```
+
+`yes` always doubles, `no` never does, `auto` infers as before. A misspelled
+value is a startup error rather than a silent fall back to `auto`. To see what
+the gateway decided for a live call, look for the line it logs at the first
+outbound `0xFF`:
+
+```
+{"event":"outbound_iac","telnet_mode":"auto","peer_speaks_telnet":"false","doubled":"false"}
+```
 
 #### Required settings
 
@@ -576,7 +834,36 @@ each file gets its own notification.
 At the BBS prompt, run `rz`. The browser detects the ZRINIT header and opens
 a file picker. Select one or more files (up to `MAX_UPLOAD_BYTES` per file,
 default 1 GB). Transfers stream directly from the browser to the BBS with no
-server-side buffering.
+server-side buffering, paced to the WebSocket so a large file is not queued
+faster than the link can carry it.
+
+### Subpacket size (ZMODEM-8k)
+
+ZMODEM negotiates nothing about the sender's data subpacket size — 1 KiB is what
+the specification says and 8 KiB is the "ZMODEM-8k" (ZedZap) variant, which is
+why BBSes offer it as a named menu entry rather than agreeing it in the
+handshake. It therefore cannot be detected, and there is deliberately **no UI for
+it**: it does not need choosing either.
+
+- **1 KiB is sent by default** — the size every receiver tested here accepts.
+- **A receiver that wants otherwise says so.** `ZRPOS` ("resume from offset N")
+  is ZMODEM's own repair signal; the sender rewinds to that offset, drops to
+  1 KiB for the rest of the file, and says so on the terminal. It gives up after
+  3 rewinds rather than resending indefinitely.
+- `ZMODEM_BLOCK_SIZE=8192` raises it deployment-wide for a gateway that only
+  fronts boards known to take it. Worth about 15% throughput, measured against
+  real `rz` over 8 MiB.
+
+This used to infer 8 KiB from a receiver advertising no receive window, on the
+theory that a streaming receiver has no buffer to overrun. **MajorBBS falsifies
+that**: it advertises buffer 0, answers an 8 KiB subpacket with `ZRPOS 0`, and
+accepts the identical file once the fallback drops to 1 KiB. The trade is
+lopsided too — guessing 8 KiB on a board that refuses it costs a full re-send of
+everything already in flight, which on a large file is megabytes.
+
+Telnet IAC escaping is a property of the *board*, not of a transfer, so it lives
+on the phonebook entry as [`telnet:`](#telnet--iac-doubling-for-older-boards) in
+the gateway — the only place that knows which board a call reached.
 
 ### Configuration
 
@@ -585,11 +872,82 @@ Environment variables on the `web/server.js` process:
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `MAX_UPLOAD_BYTES` | `1073741824` (1 GB) | Client-side upload size cap. |
-| `ZMODEM_TIMEOUT_SEC` | `30` | Session idle timeout. |
+| `ZMODEM_TIMEOUT_SEC` | `30` | Session idle timeout, measured against link progress rather than the send loop. The wait for the receiver's ZEOF acknowledgement scales up with how long the file took to send (capped at 10 min), since buffering between the browser and the BBS means the far end can still be busy long after the browser has finished. |
+| `ZMODEM_BLOCK_SIZE` | auto | Outbound data subpacket size: `1024`, `8192`, or auto (see above). |
+
+### Reconnecting
+
+If the link to the gateway drops, the CRT shows `NO CARRIER — LINK TO GATEWAY
+LOST` and a beige **RESET** button on the glass. Clicking it clears the screen
+and opens a fresh session, so a dropped connection no longer means reloading the
+page. Nothing reconnects on its own — a gateway session is a phone call, and
+silently redialling one that dropped mid-transfer would be worse than saying so.
 
 ### Aborting
 
 Press Ctrl-X five times to abort a transfer (standard ZMODEM cancel sequence).
+
+`+++` escapes to command mode as on a real modem, but **not while a transfer is
+running**. Binary file data contains `+++` every few tens of megabytes, and a
+paused-then-resumed upload puts guard-time silence either side of it — which is
+indistinguishable from someone typing the escape. The gateway therefore ignores
+`+++` for five seconds after any bulk read from the client. Without that, a large
+upload silently dropped out of data mode part-way through and the BBS deleted the
+partial file with no error reported anywhere.
+
+## Public hostnames
+
+nginx terminates TLS on 443 and routes by `Host` to one of two upstreams. Both
+sit behind Cloudflare; nginx refuses any TCP peer outside Cloudflare's published
+edge ranges.
+
+| Hostname | Upstream | Gate |
+|----------|----------|------|
+| `pcpursuit.net`, `www.pcpursuit.net` | `telix-web:3000` | Cloudflare edge only |
+| `mon.pcpursuit.net` | `grafana:3000` | Cloudflare edge **+ Cloudflare Access** |
+| anything else | — | connection closed (`444`) |
+
+Adding a hostname means adding a `server` block in `nginx/nginx.conf`. Three
+things to know before you do:
+
+- **The default `server` block returns `444` on purpose.** With name-based
+  routing an unmatched `Host` would otherwise fall through to whichever block
+  loaded first, quietly serving one app under another's name. It also swallows
+  hits on the origin IP.
+- **`proxy_set_header` is defined once at `http` level and inheritance is
+  all-or-nothing.** nginx drops the *entire* inherited set the moment a location
+  defines any `proxy_set_header` of its own — which kills the `Upgrade` /
+  `Connection` pair the terminal's WebSocket needs. If a location needs an extra
+  header, repeat the whole block there.
+- **The cert does not need to list the hostname.** The zone runs Cloudflare SSL
+  mode *Full*, which encrypts to the origin without validating the
+  self-signed cert `nginx/entrypoint.sh` generates. Moving the zone to *Full
+  (strict)* breaks every vhost at once and needs a real Origin CA cert.
+
+### Grafana
+
+`mon.pcpursuit.net` is gated by **Cloudflare Access**, configured in the
+Cloudflare dashboard — not in this repo. Access adds a signed JWT as the
+`Cf-Access-Jwt-Assertion` request header, and the vhost returns `403` when that
+header is absent. That check is a *failsafe, not authentication*: it is
+worthless against a forged header, but it fails closed if the Access
+application is ever deleted or misconfigured, rather than handing the
+monitoring stack to the internet with only Grafana's login in the way.
+
+**Consequence: `mon.pcpursuit.net` returns 403 until an Access application
+exists for it.** Delete the `$http_cf_access_jwt_assertion` block in
+`nginx/nginx.conf` to serve Grafana with its own login as the only gate.
+
+`GF_SERVER_ROOT_URL` and `GF_SERVER_DOMAIN` must stay in step with the `mon.*`
+`server_name`. Grafana builds absolute URLs — share links, snapshots, alert
+links — from `root_url` rather than the incoming `Host`, and nginx cannot read
+environment variables, so there is no single source for the hostname.
+
+> **Recreate nginx after editing `nginx/nginx.conf`; do not reload.** The config
+> is a single-file bind mount, so an edit that writes a *new* file leaves the
+> container on the old inode and `nginx -s reload` silently re-reads the **old**
+> config. Use `docker compose up -d --force-recreate nginx`. Same trap as
+> `prometheus.yml` — see [Editing the monitoring config](#editing-the-monitoring-config).
 
 ## Web client security
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +120,10 @@ type Session struct {
 	remoteIP     string
 	clientFilter *dialer.TelnetFilter // filters telnet commands from the client
 	banner       string
+
+	// dialTelnet is the dialled phonebook entry's IAC-doubling policy: auto
+	// (infer from negotiation), yes or no. Empty behaves as auto.
+	dialTelnet string
 
 	remoteConn net.Conn
 	remoteMu   sync.Mutex
@@ -325,6 +330,14 @@ func (s *Session) commandLoop() {
 	}
 }
 
+// telnetModeOrAuto keeps an unset mode readable in the log.
+func telnetModeOrAuto(mode string) string {
+	if mode == "" {
+		return "auto"
+	}
+	return mode
+}
+
 const maxLineLength = 1024
 const commandTimeout = 5 * time.Minute
 
@@ -345,6 +358,22 @@ func (s *Session) readLine(reader *bufio.Reader) (string, error) {
 
 		// Check for line terminator
 		if b == cr || b == lf {
+			// CR LF is one terminator, not two. Consuming only the CR left the
+			// LF in the buffered reader, where whatever read next took it as its
+			// own line ending — which made the phonebook password prompt submit
+			// an empty password the instant it was drawn and drop the call
+			// before the caller had touched the keyboard. Every telnet client
+			// ends a line that way (RFC 854), so this bit anyone not using the
+			// web terminal, which sends a bare CR.
+			//
+			// Only ever discard a byte that is already buffered: peeking past
+			// what has arrived would block waiting for a pair that may never
+			// come. LF is not IAC, so taking it raw cannot desync the filter.
+			if b == cr && reader.Buffered() > 0 {
+				if next, err := reader.Peek(1); err == nil && next[0] == lf {
+					reader.ReadByte()
+				}
+			}
 			if s.modem.Echo() {
 				if _, err := s.writeClient([]byte{cr, lf}); err != nil {
 					return "", err
@@ -554,15 +583,62 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 	// cannot inject +++ sequences to force an escape.
 	escapeCount := 0
 	var lastEscapeTime time.Time
-	preEscapePause := false
+	// A caller typing +++ has just been silent; a file transfer has just pushed
+	// megabytes. That difference is the only reliable way to tell the two apart,
+	// because guard-time silence alone cannot: the browser's backpressure pauses
+	// its send loop while the socket drains, so a chunk of binary file data that
+	// happens to *begin* with "+++" arrives looking exactly like a typed escape.
+	// It costs a 116 MB upload roughly one in every few tens of megabytes.
+	//
+	// So escapes are only recognised when the client is not plainly streaming. A
+	// human cannot type 512 bytes in one read; a ZMODEM sender does nothing else.
+	// readBuf below is 256 bytes, so this is "a full-ish read": a transfer keeps
+	// it saturated, a caller typing +++ delivers one to three bytes at a time.
+	const bulkChunk = 64
+	const bulkQuiet = 5 * time.Second
+	var lastBulk time.Time
 
 	// appendRemote queues one data byte for the BBS, doubling 0xFF when the peer
 	// speaks telnet. The client-side filter has already collapsed the proxy's
 	// doubled 0xFF back to a single byte, so without this a literal 0xFF inside
 	// an upload reaches a telnet BBS as a bare IAC and is swallowed along with
 	// the byte after it.
+	// Whether to double is normally inferred from whether the board answered
+	// negotiation, but the phonebook entry can overrule that. A 1990s DOS BBS
+	// behind a telnet front end eats IAC without ever negotiating, so the
+	// inference says "raw" and every 0xFF we send is swallowed along with the
+	// byte behind it — and since ZMODEM cannot escape 0xFF in-band, that ruins
+	// every binary upload while plain-ASCII ones sail through untouched.
+	telnetMode := s.dialTelnet
+	doubleIAC := func() bool {
+		switch telnetMode {
+		case "yes":
+			return true
+		case "no":
+			return false
+		default:
+			return filter.PeerSpeaksTelnet()
+		}
+	}
+
+	// The verdict is invisible from both ends and decides whether a binary
+	// upload survives, so record it once per session — at the first 0xFF, which
+	// is the moment it starts mattering.
+	loggedIAC := false
 	appendRemote := func(out []byte, b byte) []byte {
-		if b == dialer.IAC && filter.PeerSpeaksTelnet() {
+		if b != dialer.IAC {
+			return append(out, b)
+		}
+		if !loggedIAC {
+			loggedIAC = true
+			s.logger.Info().
+				Str("event", "outbound_iac").
+				Str("telnet_mode", telnetModeOrAuto(telnetMode)).
+				Str("peer_speaks_telnet", strconv.FormatBool(filter.PeerSpeaksTelnet())).
+				Str("doubled", strconv.FormatBool(doubleIAC())).
+				Msg("client sent 0xFF to the BBS")
+		}
+		if doubleIAC() {
 			return append(out, dialer.IAC, dialer.IAC)
 		}
 		return append(out, b)
@@ -651,7 +727,6 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 						pending = appendRemote(pending, escapeChar)
 					}
 					escapeCount = 0
-					preEscapePause = false
 					if _, err := remote.Write(pending); err != nil {
 						s.hangup()
 						s.sendResult(modem.ResultNoCarrier)
@@ -670,6 +745,9 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 
 		// Filter telnet commands from client input
 		filtered, responses := s.clientFilter.Filter(readBuf[:n])
+		if len(filtered) >= bulkChunk {
+			lastBulk = time.Now()
+		}
 		if len(responses) > 0 {
 			s.writeClient(responses)
 		}
@@ -684,14 +762,31 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 			now := time.Now()
 
 			// Escape sequence detection
-			if b == escapeChar {
+			// Gating the whole branch, not its first arm: a `+` arriving while the
+			// client streams must take the ordinary data path. Testing it inside
+			// sent it to the "subsequent escape char" arm instead, which counted
+			// it regardless and reintroduced the very bug.
+			if b == escapeChar && now.Sub(lastBulk) >= bulkQuiet {
 				if escapeCount == 0 {
-					// First escape char - need pre-pause
-					if preEscapePause {
+					// The guard time has to be silence immediately before *this*
+					// byte. It used to be a flag set by whatever non-escape byte
+					// last arrived, so a chunk like "Q+++" inherited the pause
+					// that preceded the Q and read as an escape even though the
+					// Q sat between the silence and the plus.
+					//
+					// That is how a binary upload dropped the gateway into
+					// command mode mid-transfer: file data contains "+++" every
+					// few tens of megabytes, and the browser's backpressure
+					// pauses its send loop while the socket drains, manufacturing
+					// the gaps either side. The BBS then simply stops receiving —
+					// `rz` times out and deletes the partial file, no protocol
+					// error is logged and neither socket closes, which is why it
+					// looked like an intermittent network fault.
+					if now.Sub(s.lastInput) > guardTime {
 						escapeCount = 1
 						lastEscapeTime = now
 					} else {
-						// No pre-pause, send char through
+						// No silence before it, so it is ordinary data.
 						out = appendRemote(out, b)
 					}
 				} else {
@@ -706,13 +801,6 @@ func (s *Session) dataLoop(reader *bufio.Reader) {
 					}
 				}
 			} else {
-				// Check if we had a guard time pause before this
-				if now.Sub(s.lastInput) > guardTime {
-					preEscapePause = true
-				} else {
-					preEscapePause = false
-				}
-
 				// If we had pending escapes, send them through
 				for i := 0; i < escapeCount; i++ {
 					out = appendRemote(out, escapeChar)

@@ -1,0 +1,49 @@
+# Never ban an address that cannot be an internet caller.
+#
+# This is [DEFAULT] rather than a per-jail setting, and it is deliberately the
+# first file in jail.d, so it covers every jail here now and every jail added
+# later. The bug it exists to prevent is not specific to the telix jail: it is
+# a jail banning whatever its log names as the source without asking whether
+# that source is a caller at all.
+#
+# What went wrong without it: the gateway logs source_ip as the TCP peer, and
+# for anyone using the web terminal that peer is telix-web (172.18.0.6), not
+# the browser. Every web user's fumbled AT commands therefore pooled onto one
+# address, crossed maxretry, and got the web proxy itself banned — 67
+# invalid_command, 39 invalid_number and 8 rate_limited events from what is a
+# whole population of ordinary users, not an attacker.
+#
+# It happened to be harmless: f2b-telix hangs off INPUT with --dport 2323,
+# while container-to-container traffic on the bridge crosses FORWARD, so the
+# rule never matched a packet. That is luck, not design — moving the gateway
+# to host networking, or relocating the rule to DOCKER-USER (the usual fix when
+# someone notices f2b is missing Docker traffic), would cut off every browser
+# user at once. It also fed fabricated bans to recidive, which escalates to a
+# week.
+#
+# The ranges below are every address family that cannot appear as a real
+# internet source at this gateway. Port 2323 is published on 0.0.0.0, so a
+# genuine remote caller always arrives with a public address; anything private
+# reaching us is Docker, the host, Tailscale or the LAN.
+#
+# Consequence worth stating: a hostile machine on the LAN or on the tailnet
+# cannot be auto-banned. That is the intended trade — an automated ban aimed at
+# private space is how you lock yourself out of your own host.
+#
+# Note this does NOT give fail2ban visibility of abusive web-terminal users; it
+# only stops it inventing bans. Those users share one proxy address all the way
+# to the gateway, and are covered by the gateway's per-IP rate limiter,
+# MAX_WS_PER_IP in web/server.js, and Cloudflare in front. Giving fail2ban a
+# real per-user identity on that path needs the client address carried across
+# the last hop (PROXY protocol), and an enforcement point that web traffic
+# actually crosses — neither of which is in place.
+
+[DEFAULT]
+ignoreip = 127.0.0.0/8
+           ::1
+           10.0.0.0/8
+           172.16.0.0/12
+           192.168.0.0/16
+           100.64.0.0/10
+           fc00::/7
+           fe80::/10

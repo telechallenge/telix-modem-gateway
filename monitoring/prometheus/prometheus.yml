@@ -33,11 +33,18 @@ scrape_configs:
           service: web
 
   # fail2ban ban state, read out of its SQLite database by a read-only sidecar.
-  - job_name: telix-fail2ban
-    static_configs:
-      - targets: ['fail2ban-exporter:9102']
-        labels:
-          service: fail2ban
+  #
+  # Commented out because fail2ban and its exporter are behind the "fail2ban"
+  # compose profile and do not start — see the comment on the fail2ban service
+  # in docker-compose.yml for why. Left in place rather than deleted so
+  # re-enabling is two uncomments and a `--profile fail2ban`. A scrape job
+  # pointing at a service that is deliberately off would otherwise sit DOWN
+  # forever and read as a fault rather than as a decision.
+  # - job_name: telix-fail2ban
+  #   static_configs:
+  #     - targets: ['fail2ban-exporter:9102']
+  #       labels:
+  #         service: fail2ban
 
   # Host vitals. Reports the Docker host's CPU/memory/disk/network via the
   # read-only /proc and /sys bind mounts in docker-compose.yml.

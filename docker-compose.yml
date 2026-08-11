@@ -5,6 +5,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # `make docker-up` passes the real git description; a bare
+        # `docker compose up` falls back to "dev" rather than to a version
+        # number that would be a fiction.
+        VERSION: ${TELIX_VERSION:-dev}
     container_name: telix
     restart: unless-stopped
     ports:
@@ -13,8 +18,24 @@ services:
     # host but sit on other Docker networks.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Points at the mounted config rather than the copy baked into the image.
+    # The image's own /etc/telix/telix.yaml stays as the default for a bare
+    # `docker run`, which has no mount to read.
+    command: ["-config", "/etc/telix/conf/telix.yaml"]
     volumes:
-      - ./configs/telix.yaml:/etc/telix/telix.yaml:ro
+      # The config's DIRECTORY is mounted, not the file, and that is what makes
+      # hot reload work. A single-file bind mount pins the host inode: vim and
+      # `sed -i` save by writing a new file and renaming it over the old, so the
+      # container keeps reading the original inode and never sees the edit —
+      # measured, not theorised, and the same trap documented for nginx.conf and
+      # prometheus.yml. Mounting the directory resolves the name on every open,
+      # so an atomic save is picked up.
+      #
+      # It must be a SIBLING of banners rather than its parent: mounting
+      # ./configs at /etc/telix makes that path read-only, and Docker then
+      # cannot create the /etc/telix/banners mountpoint inside it — the
+      # container fails to start at all.
+      - ./configs:/etc/telix/conf:ro
       # ANSI art for the connect banner, re-read per call — drop a .ANS in here
       # and the next caller can get it, no restart needed.
       - ./banners:/etc/telix/banners:ro
@@ -33,9 +54,26 @@ services:
         max-size: "50m"
         max-file: "3"
 
+  # DISABLED. Behind a compose profile, so `docker compose up -d` does not start
+  # it; `docker compose --profile fail2ban up -d` brings it back.
+  #
+  # Why it is off: it could only ever ban callers who telnet the published port
+  # directly. Everyone arriving through the web terminal reaches the gateway as
+  # the telix-web container address, so the whole browser population shares one
+  # identity — which made the jail ban the proxy itself rather than any
+  # attacker. The ignoreip in fail2ban/ignoreip.local stops that specific
+  # self-harm and is left mounted below, so re-enabling starts from a correct
+  # config; but it does not give fail2ban a per-user identity on the web path,
+  # and nothing here does. That needs the client address carried across the last
+  # hop (PROXY protocol) plus an enforcement point web traffic actually crosses.
+  #
+  # What still protects the gateway with this off: the per-IP and global rate
+  # limiter and connection tracker in internal/server, MAX_WS_PER_IP in
+  # web/server.js, and Cloudflare in front of nginx.
   fail2ban:
     image: crazymax/fail2ban:1.1.0
     container_name: telix-fail2ban
+    profiles: ["fail2ban"]
     restart: unless-stopped
     network_mode: host
     cap_add:
@@ -44,6 +82,10 @@ services:
     entrypoint: ["/bin/sh", "-c", "mkdir -p /data/log && touch /data/log/fail2ban.log && exec /entrypoint.sh fail2ban-server -f -x -v start"]
     volumes:
       - ./fail2ban/telix.conf:/etc/fail2ban/filter.d/telix.conf:ro
+      # [DEFAULT] ignoreip, so it applies to every jail below and to any jail
+      # added later. The 00- prefix is load-bearing: jail.d is read in
+      # alphabetical order, and this must land before the jails it covers.
+      - ./fail2ban/ignoreip.local:/data/jail.d/00-ignoreip.local:ro
       - ./fail2ban/jail.local:/data/jail.d/telix.local:ro
       - ./fail2ban/recidive.local:/data/jail.d/recidive.local:ro
       - telix-logs:/app/logs:ro
@@ -61,11 +103,15 @@ services:
   # from the shared volume and never touches the fail2ban socket, so it needs no
   # privileges and cannot affect banning. Publishes no host port — Prometheus
   # scrapes it over telix-net by service name.
+  # Same profile as fail2ban above: it reads that container's database, so it has
+  # nothing to report on its own, and compose refuses a default-profile service
+  # that depends_on a profiled one.
   fail2ban-exporter:
     build:
       context: ./monitoring/fail2ban-exporter
       dockerfile: Dockerfile
     container_name: telix-fail2ban-exporter
+    profiles: ["fail2ban"]
     restart: unless-stopped
     expose:
       - "9102"
@@ -226,6 +272,9 @@ services:
       - telix-net
     depends_on:
       - telix-web
+      # Only so the mon.* upstream resolves at startup; nginx exits at boot if
+      # an upstream name does not resolve.
+      - grafana
     logging:
       driver: "json-file"
       options:
@@ -308,8 +357,18 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      # Nothing here is reachable without going through Tailscale or the host,
-      # so leave sign-up off and anonymous access off regardless.
+      # Grafana builds absolute URLs -- the post-login redirect, share links,
+      # snapshot and alert links -- from root_url, NOT from the incoming Host
+      # header. Left at the default it emits http://localhost:3000/..., so a
+      # login through nginx succeeds and then bounces the browser to a dead
+      # address. This must stay in step with the mon.* server_name in
+      # nginx/nginx.conf; there is no shared source for it, because nginx does
+      # not expand environment variables in its config.
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-https://mon.pcpursuit.net}
+      - GF_SERVER_DOMAIN=${GRAFANA_DOMAIN:-mon.pcpursuit.net}
+      # This is now reachable from the internet via nginx + Cloudflare, so
+      # sign-up and anonymous access matter for real. Cloudflare Access is the
+      # outer gate; Grafana's own login is the inner one.
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_ANALYTICS_REPORTING_ENABLED=false

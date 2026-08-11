@@ -6,6 +6,13 @@
 //   surfaceDownload({ filename, blob })
 //   surfaceError(message)
 //   promptUpload(maxBytes) -> Promise<File[]>
+//
+// There is deliberately no transfer-tuning UI here. ZMODEM negotiates nothing
+// about subpacket size, so it cannot be detected — but it does not need to be
+// chosen either: 1 KiB is what every receiver accepts, and a receiver that wants
+// something else says so with ZRPOS, which zmodem-sentry.js acts on. IAC
+// escaping is a property of the board and lives on its phonebook entry in the
+// gateway, which is the only place that knows which board a call reached.
 
 (function () {
   const $ = id => document.getElementById(id);

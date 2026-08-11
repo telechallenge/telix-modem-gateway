@@ -36,15 +36,15 @@ function zrinit(g) {
   return Uint8Array.from(hex);
 }
 
-function makeBridge(g, { files, onSend }) {
+function makeBridge(g, { files, onSend, ws, config, term }) {
   let resolvePicker;
   const picked = new Promise(res => { resolvePicker = res; });
   const events = [];
 
   const bridge = g.window.ZmodemSentry.createZmodemBridge({
-    ws: { readyState: 1, send: b => onSend(Buffer.from(b)) },
-    term: { write() {} },
-    config: { maxUploadBytes: 1 << 30, zmodemTimeoutSec: 30 },
+    ws: ws || { readyState: 1, send: b => onSend(Buffer.from(b)) },
+    term: term || { write() {} },
+    config: { maxUploadBytes: 1 << 30, zmodemTimeoutSec: 30, ...config },
     checkModemState() {},
     flashLed() {},
   });
@@ -444,38 +444,34 @@ test('a streaming receiver is not paced', async () => {
   );
 });
 
-// ZMODEM data subpackets are 1 KiB in the specification. zmodem.js allows 8192
-// because lrzsz does, and we were slicing at 4 KB — four times the legal
-// maximum. Searchlight BBS 5.1 answers an over-long frame's ZEOF with ZRPOS 0
-// ("start over") and loops there until the transfer is cancelled, so the upload
-// never completes no matter the file. Verified against the real BBS: 4 KB
-// slices fail every time, 1 KiB slices are accepted.
-test('data subpackets stay within the 1 KiB the protocol specifies', async () => {
-  const g = loadSandbox();
+// Uploads a single-byte-payload file and returns the bytes that carried it. The
+// payload byte is one ZMODEM never escapes and one that never appears in a
+// header, so the longest run of it on the wire is exactly the largest data
+// subpacket — no framing arithmetic to get wrong.
+async function measureSubpacket(g, { window, size, blockSize }) {
   const Z = g.Zmodem;
-  const SIZE = 16384;
-
   const sent = [];
-  // A payload of one never-escaped byte keeps ZDLE sequences out of the data,
-  // so every ZDLE + frame-end byte on the wire is a real subpacket terminator.
   const { bridge, offer } = makeBridge(g, {
-    files: [fakeFile('BANNER.ANS', new Array(SIZE).fill(0x41))],
+    files: [fakeFile('BANNER.ANS', new Array(size).fill(0x41))],
     onSend: b => sent.push(b),
+    config: blockSize ? { zmodemBlockSize: blockSize } : undefined,
   });
   const respond = octets => bridge.consume(Uint8Array.from(octets));
 
-  bridge.consume(zrinitWithWindow(g, 0)); // streaming, so nothing else paces us
+  bridge.consume(zrinitWithWindow(g, window));
   offer();
   await quiesce(sent);
-  respond(Z.Header.build('ZACK').to_hex());
+  respond(Z.Header.build('ZACK').to_hex()); // acknowledges our ZSINIT
   await quiesce(sent);
   const start = wireBytes(sent);
   respond(Z.Header.build('ZRPOS', 0).to_hex());
   await quiesce(sent);
+  // A windowed receiver parks the sender after every window until it acks.
+  for (let i = 0; window > 0 && i <= Math.ceil(size / window); i++) {
+    respond(Z.Header.build('ZACK').to_hex());
+    await quiesce(sent);
+  }
 
-  // The payload byte is never escaped and never appears in a header, so the
-  // longest run of it on the wire is exactly the largest subpacket payload —
-  // no framing arithmetic to get wrong.
   const wire = Buffer.concat(sent).subarray(start);
   let longest = 0;
   let run = 0;
@@ -484,11 +480,223 @@ test('data subpackets stay within the 1 KiB the protocol specifies', async () =>
     else run = 0;
   }
   assert.ok(longest > 0, 'expected file data on the wire');
+  return longest;
+}
+
+// The sender picks the data subpacket size; ZMODEM negotiates nothing about it,
+// which is why "ZMODEM-8k" is a name on a BBS protocol menu rather than a flag
+// in the handshake. Both sizes here are load-bearing and were learned the hard
+// way against real boards:
+//
+//   - Searchlight BBS 5.1 (which advertises a receive window) answers anything
+//     over 1 KiB with `ZRPOS 0` — "start over" — and loops there until the
+//     transfer is cancelled, so the file never lands. 4 KB slices failed every
+//     time against it; 1 KiB slices are accepted.
+//   - ENiGMA½ receives with `sexyz -telnet -8 rz` or lrzsz's `rz` (its two
+//     default protocols are literally named "ZModem 8k (SEXYZ)" and "ZModem
+//     8k"). Both stream — buffer 0 in their ZRINIT — and both assemble
+//     subpackets into an 8192-byte buffer.
+test('auto sends the 1 KiB the specification names, whatever the ZRINIT says', async () => {
+  // This used to infer 8 KiB from a receiver advertising no window. MajorBBS
+  // advertises buffer 0, refuses 8 KiB with `ZRPOS 0`, and accepts the identical
+  // file once the fallback drops to 1 KiB — so the inference was wrong, and the
+  // trade is lopsided: guessing 8 KiB on a board that refuses it costs a full
+  // re-send of everything already in flight, guessing 1 KiB on a board that
+  // would have taken 8 KiB costs ~15% throughput.
   assert.strictEqual(
-    longest, 1024,
-    `longest data subpacket was ${longest} bytes; the protocol caps them at 1024 ` +
-    `and Searchlight answers anything larger with ZRPOS 0`
+    await measureSubpacket(loadSandbox(), { window: 0, size: 16384 }), 1024,
+    'a streaming receiver must not be assumed to take 8k — MajorBBS does not'
   );
+  assert.strictEqual(
+    await measureSubpacket(loadSandbox(), { window: 8192, size: 16384 }), 1024,
+    'a windowed receiver is the DOS-era population Searchlight belongs to; it must keep 1 KiB'
+  );
+  assert.strictEqual(
+    await measureSubpacket(loadSandbox(), { window: 0, size: 16384, blockSize: 8192 }), 8192,
+    '8k stays available, but only when it is asked for'
+  );
+});
+
+// The auto rule above is an inference from two measured populations, not a
+// guarantee the protocol makes, so a board that disagrees has to be pinnable
+// without a code change.
+// SEXYZ — ENiGMA½'s default "ZModem 8k (SEXYZ)" receiver — answers our ZSINIT
+// with a ZACK and then loops straight back to re-announcing itself, so the ZACK
+// and the next ZRINIT arrive in one TCP segment. zmodem.js clears
+// `_next_header_handler` the moment it dispatches a header and reinstalls the
+// next one on a microtask, while our splitter feeds every header of a chunk in
+// the same synchronous turn — so the ZRINIT landed in that null window and
+// `_consume_header` threw "Cannot read properties of null (reading 'ZRINIT')".
+// The bridge tore the session down, yet zmodem.js's own promise chain carried on
+// and sent the ZFILE regardless, which is why the receiver's ZRPOS then printed
+// as line noise on a dead session.
+test('a ZRINIT coalesced behind the ZSINIT ack does not kill a SEXYZ upload', async () => {
+  const g = loadSandbox();
+  const Z = g.Zmodem;
+  const sent = [];
+  const { bridge, events, offer } = makeBridge(g, {
+    files: [fakeFile('SIMCITY2.ZIP', new Uint8Array(4096).fill(0x41))],
+    onSend: b => sent.push(b),
+  });
+
+  // flags 0x23 (no ESCCTL) is what SEXYZ and lrzsz both advertise, and it is
+  // what makes zmodem.js detour through a ZSINIT before the offer.
+  bridge.consume(zrinitWithWindow(g, 0));
+  offer();
+  await quiesce(sent);
+
+  // The segment that used to be fatal: ZACK for our ZSINIT, then the receiver's
+  // next keep-alive ZRINIT, delivered together.
+  bridge.consume(Uint8Array.from([
+    ...Z.Header.build('ZACK').to_hex(),
+    ...zrinitWithWindow(g, 0),
+  ]));
+  await quiesce(sent);
+
+  assert.ok(
+    Buffer.concat(sent).includes(Buffer.from('SIMCITY2.ZIP')),
+    `the ZFILE offer never reached the wire: ${JSON.stringify(events)}`
+  );
+  assert.ok(
+    !events.some(e => e[0] === 'endXfer' && e[1] === 'aborted'),
+    `the keep-alive ZRINIT aborted the session: ${JSON.stringify(events)}`
+  );
+
+  // And the session is still healthy enough to finish the file.
+  bridge.consume(Uint8Array.from(Z.Header.build('ZRPOS', 0).to_hex()));
+  await quiesce(sent);
+  bridge.consume(Uint8Array.from(Z.Header.build('ZRINIT', ['CANFDX', 'CANOVIO', 'CANFC32']).to_hex()));
+  await quiesce(sent);
+  assert.ok(
+    events.some(e => e[0] === 'endXfer' && e[1] === 'done'),
+    `upload did not complete after the coalesced ZRINIT: ${JSON.stringify(events)}`
+  );
+});
+
+// The timeout path used to end a transfer in complete silence, which is why
+// every failing session anyone pasted stopped mid-sentence — indistinguishable
+// from the BBS hanging up.
+test('a timeout says so on the terminal instead of ending in silence', async () => {
+  const g = loadSandbox();
+  const lines = [];
+  const { bridge, events, offer } = makeBridge(g, {
+    files: [fakeFile('BORING.ANS', new Uint8Array(64).fill(0x41))],
+    onSend() {},
+    term: { write: s => lines.push(s) },
+    config: { zmodemTimeoutSec: 0.1 },
+  });
+
+  bridge.consume(zrinitWithWindow(g, 0));
+  offer();
+  await new Promise(r => setTimeout(r, 400)); // never answer the ZSINIT
+
+  assert.ok(
+    events.some(e => e[0] === 'endXfer' && e[1] === 'timeout'),
+    `expected a timeout, got ${JSON.stringify(events)}`
+  );
+  assert.ok(
+    lines.some(l => l.includes('TIMED OUT')),
+    `the timeout left no trace on the terminal: ${JSON.stringify(lines)}`
+  );
+});
+
+// A browser WebSocket whose send() queues rather than blocks, exactly like the
+// real one: bytes pile up in `bufferedAmount` and drain on the network's
+// schedule, not the sender's.
+function drainingWS({ perTick, tickMs }) {
+  const ws = {
+    readyState: 1,
+    bufferedAmount: 0,
+    peak: 0,
+    total: 0,
+    head: Buffer.alloc(0), // first few KB, so a test can spot the ZFILE offer
+    send(b) {
+      if (ws.head.length < 4096) ws.head = Buffer.concat([ws.head, Buffer.from(b)]);
+      ws.bufferedAmount += b.length;
+      ws.total += b.length;
+      if (ws.bufferedAmount > ws.peak) ws.peak = ws.bufferedAmount;
+    },
+  };
+  ws.timer = setInterval(() => {
+    ws.bufferedAmount = Math.max(0, ws.bufferedAmount - perTick);
+  }, tickMs);
+  return ws;
+}
+
+async function waitFor(pred, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (pred()) return true;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  return false;
+}
+
+// ws.send() appends to a buffer and returns; nothing above it blocked either, so
+// the send loop used to hand zmodem.js the whole file as fast as JavaScript
+// could escape it. The browser then showed 100%, the loop stopped re-arming the
+// idle timer, and 30s later the session was aborted — silently, because the
+// timeout path does not trace — while the first megabyte was still on the wire.
+// That is how a 116 MB upload to ENiGMA½ ended at "all 121779977 bytes sent,
+// waiting for the receiver" and nothing after it.
+//
+// The timeout here (250ms) is far shorter than the ~600ms this file takes to
+// drain, so a sender that does not re-arm on real progress cannot pass, and the
+// peak assertion fails for any sender that queues faster than the socket drains.
+test('a large upload paces itself to the socket and is not timed out by its own backlog', async () => {
+  const g = loadSandbox();
+  const Z = g.Zmodem;
+  const SIZE = 4 << 20;
+  const ws = drainingWS({ perTick: 128 * 1024, tickMs: 20 });
+  const lines = [];
+
+  try {
+    const { bridge, events, offer } = makeBridge(g, {
+      files: [fakeFile('SIMCITY2.ZIP', new Uint8Array(SIZE).fill(0x41))],
+      ws,
+      term: { write: s => lines.push(s) },
+      config: { zmodemTimeoutSec: 0.25 },
+    });
+    const respond = octets => bridge.consume(Uint8Array.from(octets));
+
+    bridge.consume(zrinit(g)); // ESCCTL, so no ZSINIT detour before the offer
+    offer();
+    assert.ok(
+      await waitFor(() => ws.head.includes(Buffer.from('SIMCITY2.ZIP')), 2000),
+      'the ZFILE offer never reached the wire'
+    );
+    respond(Z.Header.build('ZRPOS', 0).to_hex());
+
+    assert.ok(
+      await waitFor(() => lines.some(l => l.includes('for the receiver')), 20000),
+      `the data phase never finished (${ws.total} of ${SIZE} bytes queued)`
+    );
+    respond(Z.Header.build('ZRINIT', ['CANFDX', 'CANOVIO', 'CANFC32']).to_hex());
+    await waitFor(() => events.some(e => e[0] === 'endXfer'), 3000);
+    respond(Z.Header.build('ZFIN').to_hex()); // let close() finish
+
+    assert.deepStrictEqual(
+      events.filter(e => e[0] === 'endXfer'), [['endXfer', 'done']],
+      `a transfer that was progressing the whole time did not complete: ${JSON.stringify(events)}`
+    );
+    assert.ok(
+      ws.peak < 2 << 20,
+      `peaked at ${ws.peak} bytes queued for a ${SIZE}-byte file; the sender is ` +
+      'not waiting for the socket, so progress and the idle timer both measure the loop'
+    );
+  } finally {
+    clearInterval(ws.timer);
+  }
+});
+
+test('chooseBlockSize ignores a size that is not one of the two real ones', () => {
+  const { chooseBlockSize } = loadSandbox().window.ZmodemSentry;
+  // Anything else on the wire is neither the spec size nor the 8k variant, so
+  // it falls back to the auto rule rather than being honoured.
+  assert.strictEqual(chooseBlockSize(0, 4096), 1024);
+  assert.strictEqual(chooseBlockSize(8192, 4096), 1024);
+  assert.strictEqual(chooseBlockSize(0, 0), 1024);
+  assert.strictEqual(chooseBlockSize(0, 8192), 8192, '8k is still reachable by asking');
 });
 
 // DSZ/GSZ (and most DOS ZMODEM) advertise a non-zero receive buffer in ZRINIT.
@@ -534,4 +742,162 @@ test('a ZRINIT advertising a non-zero buffer still triggers the upload picker', 
   const b2 = g2.window.ZmodemSentry.createZmodemBridge({ ws: { readyState: 1, send() {} }, term: { write() {} }, config: { maxUploadBytes: 1 << 30, zmodemTimeoutSec: 30 }, checkModemState() {}, flashLed() {} });
   b2.consume(zrinitStreaming);
   assert.strictEqual(prompt2, 1, 'streaming ZRINIT should still open the picker');
+});
+
+// zmodem.js's streaming sender registers no header handler for the whole data
+// phase, and `_consume_header` reads `_next_header_handler[NAME]` straight off a
+// null — so *any* header the receiver sent mid-stream killed the upload with
+// "Cannot read properties of null (reading 'ZRPOS')". SEXYZ does send one.
+// ZRPOS is the receiver asking us to resume from an offset, which is ZMODEM's
+// own repair mechanism and something we can honour: the file is already in
+// memory, so there is nothing to re-read.
+async function uploadWithRewind(g, { rewindsToSend, target, size }) {
+  const Z = g.Zmodem;
+  const sent = [];
+  const lines = [];
+  let inData = false;
+  let rewindsSent = 0;
+  let bridge;
+
+  // The send loop is an unbroken microtask chain, so a timer would not fire
+  // until it had finished — the header has to be injected from the write that
+  // provokes it, which is also exactly how a fast link delivers one.
+  const ws = {
+    readyState: 1,
+    send(b) {
+      sent.push(Buffer.from(b));
+      if (!inData || rewindsSent >= rewindsToSend) return;
+      if (wireBytes(sent) < 9000 * (rewindsSent + 1)) return;
+      rewindsSent++;
+      bridge.consume(Uint8Array.from(Z.Header.build('ZRPOS', target).to_hex()));
+    },
+  };
+
+  const made = makeBridge(g, {
+    files: [fakeFile('SIMCITY2.ZIP', new Uint8Array(size).fill(0x41))],
+    ws,
+    term: { write: s => lines.push(s) },
+    config: { zmodemBlockSize: 8192 },
+  });
+  bridge = made.bridge;
+  const respond = o => bridge.consume(Uint8Array.from(o));
+
+  bridge.consume(zrinitWithWindow(g, 0));
+  made.offer();
+  await quiesce(sent);
+  respond(Z.Header.build('ZACK').to_hex());     // acknowledges our ZSINIT
+  await quiesce(sent);
+  inData = true;
+  respond(Z.Header.build('ZRPOS', 0).to_hex()); // accepts the offer
+  await quiesce(sent);
+
+  return { ...made, sent, lines, respond, payloadBytes: () => {
+    let n = 0;
+    for (const b of Buffer.concat(sent)) if (b === 0x41) n++;
+    return n;
+  } };
+}
+
+test('a mid-stream ZRPOS rewinds the send and drops to 1 KiB subpackets', async () => {
+  const g = loadSandbox();
+  const SIZE = 32768;
+  const TARGET = 4096;
+  const h = await uploadWithRewind(g, { rewindsToSend: 1, target: TARGET, size: SIZE });
+
+  // The header trace is what makes a pasted session diagnosable: a ZRPOS
+  // answering the ZFILE is the offer being accepted, the same header later means
+  // the receiver lost sync, and only the order tells them apart.
+  assert.ok(
+    h.lines.some(l => l.includes('<- ZRPOS offset=0')),
+    `the offer-accepting ZRPOS was not named: ${JSON.stringify(h.lines.map(l => l.trim()).filter(Boolean))}`
+  );
+  assert.ok(
+    h.lines.some(l => l.includes(`<- ZRPOS offset=${TARGET}`)),
+    'the mid-stream rewind request must be named with its offset'
+  );
+  assert.ok(
+    h.lines.some(l => l.includes(`rewound to offset ${TARGET}`)),
+    `the rewind was not honoured: ${JSON.stringify(h.lines.map(l => l.trim()).filter(Boolean))}`
+  );
+  assert.ok(
+    h.lines.some(l => l.includes('1024-byte subpackets')),
+    'the first rewind should fall back to the 1 KiB the specification names'
+  );
+  assert.ok(
+    h.payloadBytes() > SIZE,
+    `nothing was resent (${h.payloadBytes()} payload bytes for a ${SIZE}-byte file)`
+  );
+
+  h.respond(g.Zmodem.Header.build('ZRINIT', ['CANFDX', 'CANOVIO', 'CANFC32']).to_hex());
+  await quiesce(h.sent);
+  assert.ok(
+    h.events.some(e => e[0] === 'endXfer' && e[1] === 'done'),
+    `the upload did not recover: ${JSON.stringify(h.events)}`
+  );
+});
+
+// Resending is only worth it if it can converge, and each round is a full
+// re-upload — so it has to stop, and the reason it gives has to be the right one.
+// A receiver stuck at offset 0 has never taken a single data byte, which rules
+// out the block size (the ZFILE offer got through, and that is plain ASCII);
+// only binary data is being rejected, so something is altering high bytes. One
+// retry is enough to learn that, and on a 116 MB upload the difference between
+// one wasted re-send and three is the whole afternoon.
+test('a receiver stuck at offset 0 is diagnosed, not retried into the ground', async () => {
+  const g = loadSandbox();
+  const h = await uploadWithRewind(g, { rewindsToSend: 99, target: 0, size: 32768 });
+
+  assert.ok(
+    h.events.some(e => e[0] === 'endXfer' && e[1] === 'aborted'),
+    `expected the transfer to give up, got ${JSON.stringify(h.events)}`
+  );
+  const why = h.lines.find(l => l.includes('FAILED')) || '';
+  assert.match(why, /rewound us 2 times/, 'nothing was ever accepted, so one retry is the budget');
+  assert.match(why, /never accepted a single data byte/);
+  // A board refusing the file on size answers ZRPOS 0 and keeps answering it,
+  // which is indistinguishable from a corrupt link — and it is far commoner, so
+  // it has to be named first, with the size to check the limit against.
+  assert.match(why, /refusing the file on size/);
+  assert.match(why, /32768 bytes/, 'the message must carry the size to compare with the limit');
+  assert.match(why, /0xFF/, 'the escaping hypothesis stays, as the second suspect');
+  assert.match(why, /outbound_iac/, 'it must name where that verdict is recorded');
+});
+
+// A receiver that *is* taking data and rewinds part-way through is the ordinary
+// line-noise case, and that one is worth a few more attempts.
+test('a rewind part-way through the file is retried rather than diagnosed', async () => {
+  const g = loadSandbox();
+  const h = await uploadWithRewind(g, { rewindsToSend: 99, target: 8192, size: 32768 });
+
+  const why = h.lines.find(l => l.includes('FAILED')) || '';
+  assert.match(why, /rewound us 4 times/, 'a receiver making progress gets the full budget');
+  assert.match(why, /not arriving intact/);
+});
+
+// ZMODEM_BLOCK_SIZE is a deployment-wide override for the auto rule. There is no
+// per-upload picker: the size cannot be detected, and 1 KiB needs no choosing.
+test('a configured block size overrides what the ZRINIT implies', async () => {
+  const g = loadSandbox();
+  const sent = [];
+  const { bridge, offer } = makeBridge(g, {
+    files: [fakeFile('BANNER.ANS', new Uint8Array(8192).fill(0x41))],
+    onSend: b => sent.push(b),
+    config: { zmodemBlockSize: 1024 },
+  });
+  const respond = o => bridge.consume(Uint8Array.from(o));
+
+  bridge.consume(zrinitWithWindow(g, 0)); // streaming: auto would say 8192
+  offer();
+  await quiesce(sent);
+  respond(g.Zmodem.Header.build('ZACK').to_hex());
+  await quiesce(sent);
+  const start = wireBytes(sent);
+  respond(g.Zmodem.Header.build('ZRPOS', 0).to_hex());
+  await quiesce(sent);
+
+  let longest = 0, run = 0;
+  for (const b of Buffer.concat(sent).subarray(start)) {
+    if (b === 0x41) { run++; if (run > longest) longest = run; } else run = 0;
+  }
+  assert.strictEqual(longest, 1024, `configured 1k but ${longest}-byte subpackets went out`);
 });

@@ -221,3 +221,136 @@ test('GET /config.json defaults: 1 GiB / 30 s', async () => {
     assert.strictEqual(body.zmodemTimeoutSec, 30);
   });
 });
+
+test('GET /config.json exposes the ZMODEM block size, auto by default', async () => {
+  delete process.env.ZMODEM_BLOCK_SIZE;
+  await withProxy(async ({ wsPort }) => {
+    assert.strictEqual((await getConfig(wsPort)).zmodemBlockSize, 0, 'default is auto');
+  });
+
+  process.env.ZMODEM_BLOCK_SIZE = '8192';
+  await withProxy(async ({ wsPort }) => {
+    assert.strictEqual((await getConfig(wsPort)).zmodemBlockSize, 8192);
+  });
+
+  // Only 1024 and 8192 mean anything on the wire; anything else must fall back
+  // to auto rather than putting an arbitrary subpacket size in front of a BBS.
+  process.env.ZMODEM_BLOCK_SIZE = '4096';
+  await withProxy(async ({ wsPort }) => {
+    assert.strictEqual((await getConfig(wsPort)).zmodemBlockSize, 0);
+  });
+  delete process.env.ZMODEM_BLOCK_SIZE;
+});
+
+function getConfig(wsPort) {
+  return new Promise((resolve, reject) => {
+    require('node:http').get(`http://127.0.0.1:${wsPort}/config.json`, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => resolve(JSON.parse(data)));
+    }).on('error', reject);
+  });
+}
+
+// net.Socket#write buffers in the heap and returns false past its high-water
+// mark. Ignoring that meant a ZMODEM upload the gateway could not drain simply
+// relocated into this process — the browser watched its own socket empty,
+// concluded the file had landed and started its idle timer while the bytes were
+// still queued here. The fix pauses the WebSocket until the gateway catches up,
+// so what this has to prove is the other half: that it resumes, and that every
+// byte still arrives in order.
+test('a slow gateway backpressures the browser without losing or reordering bytes', async () => {
+  await withProxy(async ({ wsPort, backendConns }) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${wsPort}/ws`);
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    while (backendConns.length === 0) await new Promise(r => setTimeout(r, 10));
+    const backend = backendConns[0];
+
+    const CHUNK = 64 * 1024;
+    const CHUNKS = 64; // 4 MiB, comfortably past any socket buffer in the path
+    let got = 0;
+    let ordered = true;
+    // Read in bursts with the socket paused in between: the gateway here is the
+    // slow end, which is the case the pause/resume path exists for.
+    backend.pause();
+    const reader = setInterval(() => {
+      const buf = backend.read();
+      if (!buf) return;
+      for (const b of buf) {
+        if (b !== 1 + (got % 254)) ordered = false;
+        got++;
+      }
+    }, 5);
+
+    for (let i = 0; i < CHUNKS; i++) {
+      const buf = Buffer.alloc(CHUNK);
+      // A ramp over 0x01..0xFE. It must avoid 0xFF, which escapeIAC doubles so
+      // the count below would stop being a straight one, and 0x00, which the
+      // proxy reads as the leading byte of a NAWS resize frame — a payload
+      // starting with it is swallowed and replaced by 9 bytes of NAWS.
+      for (let j = 0; j < CHUNK; j++) buf[j] = 1 + ((i * CHUNK + j) % 254);
+      ws.send(buf, { binary: true });
+    }
+
+    const deadline = Date.now() + 20000;
+    while (got < CHUNK * CHUNKS && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 10));
+    }
+    clearInterval(reader);
+    ws.close();
+
+    assert.strictEqual(got, CHUNK * CHUNKS, `the gateway did not receive every byte (got ${got})`);
+    assert.ok(ordered, 'bytes arrived out of order or corrupted');
+  });
+});
+
+// nginx *appends* to whatever X-Forwarded-For the client sent
+// ($proxy_add_x_forwarded_for = "$http_x_forwarded_for, $remote_addr"), so the
+// first entry of that header is attacker-controlled. Reading it as the client
+// identity hands out a fresh MAX_WS_PER_IP budget for every forged value.
+// X-Real-IP is the one nginx *sets* — it overwrites any client-supplied copy —
+// so it is the only forwarded header here that a caller cannot choose.
+test('a forged X-Forwarded-For cannot buy extra connections past MAX_WS_PER_IP', async () => {
+  const prevMax = process.env.MAX_WS_PER_IP;
+  process.env.MAX_WS_PER_IP = '2';
+  try {
+    await withProxy(async ({ wsPort }) => {
+      const sockets = [];
+      const closes = [];
+
+      // Three calls from one real client (203.0.113.7), each forging a
+      // different first XFF entry — exactly what nginx forwards when the
+      // browser sets its own X-Forwarded-For.
+      for (let i = 0; i < 3; i++) {
+        const ws = new WebSocket(`ws://127.0.0.1:${wsPort}/ws`, {
+          headers: {
+            'X-Real-IP': '203.0.113.7',
+            'X-Forwarded-For': `198.51.100.${i + 1}, 203.0.113.7`,
+          },
+        });
+        ws.on('close', code => closes.push(code));
+        sockets.push(ws);
+        await new Promise((resolve, reject) => {
+          ws.once('open', resolve);
+          ws.once('error', reject);
+        });
+      }
+
+      // The rejection is a close frame sent straight after the handshake, so
+      // it lands just behind 'open'. Give it a beat to arrive.
+      const deadline = Date.now() + 2000;
+      while (closes.length === 0 && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      for (const ws of sockets) ws.close();
+
+      assert.deepStrictEqual(
+        closes, [1008],
+        `expected the third call to be rejected as over the per-IP limit, got closes: ${JSON.stringify(closes)}`,
+      );
+    });
+  } finally {
+    if (prevMax === undefined) delete process.env.MAX_WS_PER_IP;
+    else process.env.MAX_WS_PER_IP = prevMax;
+  }
+});

@@ -763,12 +763,463 @@
     },
     {
       "type": "row",
-      "title": "Abuse",
+      "title": "BBS reachability",
+      "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 30
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Boards answering",
+      "description": "Phonebook entries whose host:port accepted a TCP connection at the last probe. Busy entries are not probed and are not counted here \u2014 they never place an outbound call, so no host is on their path.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(telix_bbs_reachable) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Not answering",
+      "description": "Entries that refused or timed out. `or vector(0)` is load-bearing: count() over an empty match returns no series at all, so without it a healthy gateway reads 'No data' where it should read 0.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(telix_bbs_reachable == 0) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "state-timeline",
+      "title": "Reachability",
+      "description": "One band per phonebook entry, from the gateway's own TCP probe every probe.interval seconds \u2014 so a board that goes down is visible without waiting for a caller to find out. The probe connects and hangs up without negotiating telnet, which means it does not appear in the board's caller log, and equally that UP proves only that the line answers: a board accepting sockets while refusing logins still reads UP. Entries marked busy: in the phonebook are absent by design.",
+      "gridPos": {
+        "h": 8,
+        "w": 20,
+        "x": 4,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "telix_bbs_reachable",
+          "legendFormat": "{{entry}} ({{address}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 90
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Connect time",
+      "description": "How long the TCP handshake took, recorded whether the probe succeeded or failed \u2014 so a failure's shape names its cause: a flat line at probe.timeout is a host that never answered, a near-zero one is a refusal. A board climbing while still UP is the early warning.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "telix_bbs_probe_duration_seconds",
+          "legendFormat": "{{entry}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "bargauge",
+      "title": "Time since last probe",
+      "description": "Age of each verdict. This is the panel that catches a dead prober: telix_bbs_reachable is a gauge, so if the loop stops the last value sits there reading UP forever and nothing else on this row would ever say otherwise. Anything much above probe.interval means the reading above it is stale, not good.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - telix_bbs_last_probe_timestamp_seconds",
+          "legendFormat": "{{entry}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "continuous-blues"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "valueMode": "text",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Lines configured",
+      "description": "Every entry in the phonebook, busy or not, from telix_phonebook_entry. This is the denominator for 'Boards answering' above: the two differ by the always-busy lines, which are never probed. Published once at startup \u2014 the phonebook is read at load and never reloaded, so a change here means the gateway was restarted.",
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 0,
+        "y": 46
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(telix_phonebook_entry) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Always busy (not probed)",
+      "description": "Lines with `busy: true`. They report BUSY before any dial is placed, so no host is on a caller's path and the prober skips them \u2014 which is why they have no reachability series and are absent from the timeline above. Not an error; this panel is what makes the absence visible rather than silent.",
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 4,
+        "y": 46
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(telix_phonebook_entry{busy=\"true\"}) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Phone list",
+      "description": "The phonebook as the running gateway loaded it. A line added or renamed in configs/telix.yaml appears here only after the gateway restarts, so this is also the check for whether an edit has actually been deployed. Always-busy lines carry no address requirement, so a blank host:port is valid rather than missing.",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 46
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "telix_phonebook_entry",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "indexByName": {
+              "entry": 0,
+              "address": 1,
+              "busy": 2
+            },
+            "renameByName": {
+              "entry": "Line",
+              "address": "Host:port",
+              "busy": "Always busy"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Line"
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Abuse",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 54
       },
       "collapsed": false,
       "panels": []
@@ -781,7 +1232,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 31
+        "y": 55
       },
       "datasource": {
         "type": "prometheus",
@@ -851,7 +1302,7 @@
         "h": 8,
         "w": 10,
         "x": 6,
-        "y": 31
+        "y": 55
       },
       "datasource": {
         "type": "prometheus",
@@ -945,7 +1396,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 31
+        "y": 55
       },
       "datasource": {
         "type": "prometheus",
@@ -992,7 +1443,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 39
+        "y": 63
       },
       "collapsed": false,
       "panels": []
@@ -1005,7 +1456,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 40
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -1069,7 +1520,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 40
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -1140,7 +1591,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 40
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -1186,7 +1637,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 47
+        "y": 71
       },
       "datasource": {
         "type": "prometheus",
@@ -1237,7 +1688,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 71
       },
       "datasource": {
         "type": "prometheus",

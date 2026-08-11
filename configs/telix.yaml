@@ -2,6 +2,29 @@ server:
   port: 2323
   max_connections: 100
   max_per_ip: 5
+  # Peers that are reverse proxies rather than callers, exempt from max_per_ip
+  # and from rate_limit. Both are per-IP, and telix-web is one address carrying
+  # every web-terminal user: at max_per_ip 5 the whole site was capped at five
+  # concurrent browser users, and the sixth was refused outright.
+  #
+  # This is the Docker bridge pool rather than telix-net's current /16 on
+  # purpose. Compose renumbers these networks when the stack is recreated —
+  # observed here, telix-net moved from 172.18.0.0/16 to 172.19.0.0/16 and the
+  # proxy's address moved with it. A pinned /16 would survive until the next
+  # `docker compose down` and then silently reinstate the cap it exists to
+  # remove. Nothing is lost by the wider range: port 2323 is published on
+  # 0.0.0.0, so a real remote caller never arrives from private space.
+  #
+  # Note this trusts any container on this host, and that Docker's secondary
+  # default pool (192.168.0.0/16) is not covered — if the host ever exceeds ~15
+  # compose networks, check where telix-net landed.
+  #
+  # Global ceilings still bind the proxy: max_connections above is enforced for
+  # it exactly as for anyone else. Per-browser-user limiting lives in the one
+  # place that still knows who the user is — MAX_WS_PER_IP in web/server.js,
+  # reading the address nginx puts in X-Real-IP.
+  trusted_proxies:
+    - "172.16.0.0/12"
   idle_timeout: 300  # seconds
   # Directory of ANSI art (.ANS); one file is picked at random per call and
   # drawn instead of the built-in TELIX banner. This is the path *inside the
@@ -29,8 +52,8 @@ phonebook:
     password: "DECALPHA"
 
   - number: "860-594-0200"
-    host: "BBS.hamvillage.org"
-    port: 23
+    host: "host.docker.internal"
+    port: 8023 
     name: "hamvillage bbs"
 
   - number: "867-5309"
@@ -47,6 +70,7 @@ phonebook:
     host: "host.docker.internal"
     port: 8403
     name: "HPACV Heaven"
+    busy: true
 
   - number: "702-385-5652"
     host: "host.docker.internal"
@@ -57,6 +81,59 @@ phonebook:
     host: "host.docker.internal"
     port: 22023
     name: "Terminal Velocity"
+
+  - number: "503-483-6584"
+    host: "host.docker.internal"
+    port: 1040
+    name: "Accounting Den"
+ 
+  - number: "503-388-9637"
+    host: "host.docker.internal"
+    port: 1140
+    name: "Appliance HelpLine"
+
+  - number: "503-444-9412"
+    host: "host.docker.internal"
+    port: 2600
+    name: "Chuch BBS aka HPACV Haven"
+
+  - number: "206-888-6424"
+    host: "host.docker.internal"
+    port: 1087 
+    name: "Dental Talk"
+
+  - number: "503-926-6341"
+    host: "host.docker.internal"
+    port: 22023
+    name: "Garden Notebook"
+    busy: true
+
+  - number: "206-466-3296"
+    host: "host.docker.internal"
+    port: 22023
+    name: "Genealogy Desk"
+    busy: true
+
+  - number: "503-928-8465"
+    host: "host.docker.internal"
+    port: 1087
+    name: "MODEL RAILROAD DEPOT"
+
+  - number: "503-294-5966"
+    host: "host.docker.internal"
+    port: 2424 
+    name: "Shareware Barn"
+
+  - number: "503-894-5775"
+    host: "host.docker.internal"
+    port: 22023
+    name: "Small Business Forms"
+    busy: true
+
+  - number: "503-926-6217"
+    host: "host.docker.internal"
+    port: 12323
+    name: "starwars - Stamp Trader"
 
   # Example: number gated by a password. The modem rings and reports CONNECT
   # first, so the prompt (shadow-echoed as '*') looks like the BBS's own login;
@@ -74,10 +151,41 @@ dialer:
   allowed_networks:
 
 rate_limit:
-  enabled: true
+  # OFF. It keys on conn.RemoteAddr() (internal/server/server.go), which for
+  # every web-terminal caller is the telix-web container address — so the whole
+  # browser population shared one bucket. At the settings below that meant the
+  # sixth browser connection in any minute, from anyone, blocked the entire web
+  # terminal for five minutes. Measured: six WebSocket connections in a burst
+  # were dropped and logged as rate_limited against the proxy address.
+  #
+  # Disabling also switches off the global cap (globalMaxRate, 1000 per window)
+  # that this limiter carries, since Allow() returns true before reaching it.
+  # server.max_connections (100) is still enforced and is the remaining global
+  # ceiling; it counts totals rather than per-IP, so the address collapse does
+  # not distort it.
+  #
+  # The settings below are kept as the values to restore. Re-enabling without
+  # first giving the gateway a real per-caller identity on the web path (PROXY
+  # protocol across the last hop) reinstates the same self-DoS.
+  enabled: false
   max_attempts: 5
   window_seconds: 60
   block_duration: 300
+
+probe:
+  # Periodic reachability check over the phonebook: every non-busy entry's
+  # host:port is offered a TCP connection and the result published as
+  # telix_bbs_reachable. Busy entries are skipped — they never place a call.
+  #
+  # This is a connect-and-hang-up, with no telnet negotiation, so a board does
+  # not log it as a caller. It proves the line answers; it cannot prove anybody
+  # can log in.
+  #
+  # Off by default, because some of these hosts belong to other people. interval
+  # has a floor of 10s for the same reason.
+  enabled: true
+  interval: 60  # seconds between cycles
+  timeout: 5    # seconds to wait for a connection
 
 metrics:
   # Prometheus exposition endpoint, on its own listener so it is never
@@ -89,3 +197,30 @@ metrics:
   # the compose network; the host-side exposure is restricted by the port
   # bindings in docker-compose.yml, not here.
   bind: "0.0.0.0"
+
+reload:
+  # Watch this file and apply edits to the running gateway, so adding a board
+  # or changing a limit does not mean restarting and dropping every call in
+  # progress. Changes are picked up within `interval` seconds of saving.
+  #
+  # On by default, unlike probe: this reads one local file the operator already
+  # controls and does nothing anybody else can observe.
+  #
+  # A change is applied only if it parses AND validates. A broken or half-saved
+  # edit is logged as config_reload_failed and the gateway carries on with the
+  # config it already has, so a typo costs a log line rather than an outage.
+  #
+  # NOT reloadable — these are reported as `needs_restart` on the reload log
+  # line and require `docker compose restart telix`:
+  #   server.port      the listener is already bound
+  #   metrics.*        the exposition endpoint is already bound
+  #   logging.file     the log writer is already open
+  #   logging.format   switching mid-stream would mix two formats in one file
+  # Everything else takes effect: the phonebook, logging.level, banner_dir,
+  # idle_timeout, max_connections, max_per_ip, trusted_proxies, rate_limit,
+  # dialer.allowed_networks and the probe settings.
+  #
+  # Callers already connected are never disturbed — a session keeps the config
+  # it dialled under, and only the next caller sees the edit.
+  enabled: true
+  interval: 2  # seconds between polls; floor 1

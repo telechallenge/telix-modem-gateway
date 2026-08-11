@@ -77,6 +77,9 @@ func (s *Session) handleDial(number string) {
 	// Label by entry name, never the dialled digits — an attacker sweeping
 	// numbers would otherwise mint a new time series per guess.
 	t.entry = entry.Name
+	// Held for dataLoop, which decides per byte whether to double 0xFF toward
+	// this board. Same goroutine, so no synchronisation is needed.
+	s.dialTelnet = entry.TelnetMode()
 
 	// An entry marked busy is a line that is always engaged. The telco returns
 	// busy tone before anything rings and before any negotiation, so this is

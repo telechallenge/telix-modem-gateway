@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"telix/internal/config"
+	"telix/internal/dialer"
 	"telix/internal/logging"
 	"telix/internal/modem"
 )
@@ -569,6 +570,102 @@ func TestIsConnectionRefused(t *testing.T) {
 			result := isConnectionRefused(tt.err)
 			if result != tt.expected {
 				t.Errorf("isConnectionRefused(%v) = %v, want %v", tt.err, result, tt.expected)
+			}
+		})
+	}
+}
+
+// The phonebook's telnet policy only helps if dialling actually carries it into
+// data mode. Asserting it on the Session rather than on the wire keeps this
+// about the plumbing; dataloop_test.go covers what the policy then does.
+func TestHandleDial_CarriesPhonebookTelnetModeIntoDataMode(t *testing.T) {
+	for _, tc := range []struct{ set, want string }{
+		{"yes", "yes"}, {"no", "no"}, {"", "auto"},
+	} {
+		bbs := fakeBBS(t)
+		cfg := &config.Config{
+			Version: "test",
+			Phonebook: []config.PhonebookEntry{{
+				Number: "555-1212", Name: "open", Host: bbs.host, Port: bbs.port, Telnet: tc.set,
+			}},
+		}
+		s, _ := metricsSession(t, cfg)
+		client, server := net.Pipe()
+		t.Cleanup(func() { client.Close(); server.Close() })
+		s.conn = server
+		t.Cleanup(s.hangup)
+		rec := recordClient(t, client)
+
+		s.handleDial("555-1212")
+		rec.waitFor(t, "CONNECT")
+
+		if s.dialTelnet != tc.want {
+			t.Errorf("telnet: %q → dialTelnet = %q, want %q", tc.set, s.dialTelnet, tc.want)
+		}
+	}
+}
+
+// The password gate is reached through the command loop, and readLine returns on
+// CR *or* LF — so a client that ends its line with CR LF (which every telnet
+// client does, per RFC 854) leaves the LF sitting in the buffered reader. The
+// password prompt then reads that byte as its own terminator, submits an empty
+// password and drops the call before the caller has touched the keyboard.
+//
+// Driven through commandLoop rather than handleDial, because the leftover byte
+// only exists when a real line was parsed first — which is exactly why calling
+// handleDial directly never caught this.
+func TestPasswordPrompt_SurvivesCRLFLineEnding(t *testing.T) {
+	for _, ending := range []string{"\r\n", "\r"} {
+		t.Run(fmt.Sprintf("%q", ending), func(t *testing.T) {
+			bbs := fakeBBS(t)
+			cfg := &config.Config{
+				Version: "test",
+				Server:  config.ServerConfig{IdleTimeout: 30},
+				Phonebook: []config.PhonebookEntry{{
+					Number: "555-1212", Name: "gated", Host: bbs.host, Port: bbs.port,
+					Password: "letmein",
+				}},
+			}
+			s, _ := metricsSession(t, cfg)
+			client, server := net.Pipe()
+			t.Cleanup(func() { client.Close(); server.Close() })
+			s.conn = server
+			s.done = make(chan struct{})
+			s.clientFilter = dialer.NewTelnetFilter()
+			t.Cleanup(s.hangup)
+			rec := recordClient(t, client)
+
+			go s.commandLoop()
+			if _, err := client.Write([]byte("ATDT555-1212" + ending)); err != nil {
+				t.Fatal(err)
+			}
+			// The full ring/connect simulation runs here — call setup pause plus
+			// several RINGs — so this outlasts waitFor's own budget.
+			promptBy := time.Now().Add(20 * time.Second)
+			for time.Now().Before(promptBy) && !strings.Contains(rec.text(), "PASSWORD:") {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if !strings.Contains(rec.text(), "PASSWORD:") {
+				t.Fatalf("no password prompt; output %q", rec.text())
+			}
+
+			// The caller now types, at human speed. Nothing may have happened in
+			// the meantime.
+			time.Sleep(200 * time.Millisecond)
+			if out := rec.text(); strings.Contains(out[strings.Index(out, "PASSWORD:"):], "NO CARRIER") {
+				t.Fatalf("the call was dropped before a password could be typed: %q", out)
+			}
+
+			if _, err := client.Write([]byte("letmein\r")); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) && s.modem.State() != modem.StateData {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if s.modem.State() != modem.StateData {
+				t.Errorf("modem state = %v after a correct password, want StateData; output %q",
+					s.modem.State(), rec.text())
 			}
 		})
 	}
